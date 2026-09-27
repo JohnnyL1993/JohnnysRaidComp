@@ -27,9 +27,19 @@ When someone you share the hidden `JohnnysAddons` channel, guild, party or raid 
 | `/jrc minimap` / `hub` / `none` | Switch the launcher style directly |
 | `/jrc version` | Show installed and latest seen version |
 
-## Optional companions
+## Other Johnny's addons
 
-None are required - GearScore is calculated by the addon itself (same numbers as GearScoreLite). Johnny's Addon Hub, Gear Advisor, Blacklist, Raid Browser and Raid Roll each add extra features when installed.
+None of these are required. Raid Comp works on its own, and it calculates GearScore itself (same numbers as GearScoreLite). The ones marked **★** add extra features to Raid Comp when installed.
+
+| Addon | What it does |
+| --- | --- |
+| [Johnny's Warmane Addon Hub](https://github.com/JohnnyL1993/JohnnysAddonHub) ★ | Always-on-screen launcher bar with a button for each of Johnny's addons you have installed. Replaces Raid Comp's own minimap button/panel. |
+| [Johnny's Blacklist](https://github.com/JohnnyL1993/JohnnysBlackList) ★ | Blacklist players, auto-ignore their whispers, and get warned when you see them. Raid Comp flags blacklisted raid members. |
+| [Johnny's Gear Advisor](https://github.com/JohnnyL1993/JohnnysGearAdvisor) ★ | Shows upgrade candidates for your gear based on class, spec and hit/expertise. Raid Comp uses it for spec detection and PvP gear detection. |
+| [Johnny's Raid Browser](https://github.com/JohnnyL1993/JohnnysRaidBrowser) ★ | Window listing advertised raids with role/GS filters and one-click whisper/join. Needs the RaidBrowser addon. Adds a Raid Comp launcher button. |
+| [Johnny's Raid Roll](https://github.com/JohnnyL1993/JohnnysRaidRoll) ★ | Flat-skinned windows for the RaidRoll addon's rolls, loot tracker and settings. Needs RaidRoll. Adds Raid Comp launcher buttons. |
+| [Johnny's Messenger](https://github.com/JohnnyL1993/JohnnysMessenger) | Teams-style whisper messenger with a conversation list and threads. |
+| [Johnny's Currency Tracker](https://github.com/JohnnyL1993/JohnnysCurrencyBar) | Draggable bar tracking Honor, Arena Points, Stone Keeper's Shards, Wintergrasp marks and Emblems. |
 
 ## Releasing (maintainer notes)
 
