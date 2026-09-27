@@ -1,0 +1,77 @@
+name: Bug report
+description: Something in Johnny's Raid Comp isn't working
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! The more detail you give, the quicker it gets fixed.
+        Tip: to see Lua errors in game, type `/console scriptErrors 1` (or tick Interface > Help > Display Lua Errors), then reproduce the problem.
+
+  - type: input
+    id: version
+    attributes:
+      label: Addon version
+      description: Type `/jrc version` in game and paste the version number.
+      placeholder: "1.2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong, and what did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: How can the problem be triggered?
+      placeholder: |
+        1. Open /jrc
+        2. Select ICC 25
+        3. Click ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: lua-error
+    attributes:
+      label: Lua error
+      description: Paste the full error text if you got one (from the error popup, Swatter or BugSack).
+      render: text
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the addon?
+      options:
+        - Raid Comp window
+        - Raid Spammer
+        - Launcher / minimap button
+        - Update banner
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: realm
+    attributes:
+      label: Warmane realm
+      placeholder: "e.g. Icecrown, Lordaeron, Onyxia"
+    validations:
+      required: false
+
+  - type: textarea
+    id: other-addons
+    attributes:
+      label: Other Johnny's addons installed
+      description: e.g. Addon Hub, Gear Advisor, Blacklist, Raid Browser, Raid Roll, GearScoreLite
+    validations:
+      required: false
