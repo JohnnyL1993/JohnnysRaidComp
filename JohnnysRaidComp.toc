@@ -2,7 +2,7 @@
 ## Title: Johnny's Raid Comp
 ## Notes: Ideal-comp templates per raid/size with live roster matching, manual slot assignments, class-run tank/healer picks, GearScore/blacklist lookups, and a built-in Raid Spammer (dual-channel LFM chat timer) opened from the panel.
 ## Author: Johnny
-## Version: 1.2
+## Version: 1.3
 ## SavedVariables: JohnnysRaidCompDB, JohnnysRaidSpamDB
 ## OptionalDeps: JohnnysGearAdvisor, JohnnysBlackList, JohnnysRaidBrowser
 
