@@ -27,7 +27,7 @@ local Skin = JohnnysRaidComp.Skin
 local ADDON_NAME = "JohnnysRaidComp"
 local TAG = "JRCV"
 local CHANNEL = "JohnnysAddons"
-local RELEASES_URL = "https://github.com/linnelljohn1-spec/JohnnysRaidComp/releases"
+local RELEASES_URL = "https://github.com/JohnnyL1993/JohnnysRaidComp/releases"
 
 local JOIN_DELAY = 5            -- after first PLAYER_ENTERING_WORLD
 local CHANNEL_ANNOUNCE_DELAY = 10 -- after joining

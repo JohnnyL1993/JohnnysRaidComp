@@ -4,7 +4,7 @@ A World of Warcraft 3.3.5a addon for the Warmane private server. It gives you id
 
 ## Install
 
-1. Go to [Releases](https://github.com/linnelljohn1-spec/JohnnysRaidComp/releases) and download **`JohnnysRaidComp-vX.Y.zip`** from the latest release.
+1. Go to [Releases](https://github.com/JohnnyL1993/JohnnysRaidComp/releases) and download **`JohnnysRaidComp-vX.Y.zip`** from the latest release.
    Don't use GitHub's green **Code → Download ZIP** button or the "Source code" zips. Those unpack as `JohnnysRaidComp-main` or `JohnnysRaidComp-1.2`, and WoW won't load an addon whose folder name doesn't match.
 2. Extract it into `World of Warcraft\Interface\AddOns\`. You should end up with `Interface\AddOns\JohnnysRaidComp\JohnnysRaidComp.toc`.
 3. Restart WoW, or log out to the character screen, and make sure the addon is enabled.
