@@ -271,17 +271,13 @@ end
 
 -- GearScore text + color for a slot card, from the GearScore lookup cache
 -- (see the lookup section further down this file). Gray "GS --" until a
--- lookup succeeds, or
--- if GearScoreLite isn't installed at all.
+-- lookup succeeds.
 function FormatGearScoreText(name)
 	local entry = JohnnysRaidComp.db.global.raidCompGearScores[name]
 	if not entry or not entry.score then
 		return "GS --", 0.5, 0.5, 0.5
 	end
-	local r, g, b = 1, 1, 1
-	if GearScore_GetQuality then
-		r, g, b = GearScore_GetQuality(entry.score)
-	end
+	local r, g, b = JohnnysRaidComp.GearScore:GetQuality(entry.score)
 	return "GS " .. entry.score, r, g, b
 end
 
@@ -291,10 +287,7 @@ function FormatCompactGearScoreText(name)
 	if not entry or not entry.score then
 		return "--", 0.5, 0.5, 0.5
 	end
-	local r, g, b = 1, 1, 1
-	if GearScore_GetQuality then
-		r, g, b = GearScore_GetQuality(entry.score)
-	end
+	local r, g, b = JohnnysRaidComp.GearScore:GetQuality(entry.score)
 	if entry.score >= 1000 then
 		return string.format("%.1fk", entry.score / 1000), r, g, b
 	end
@@ -302,8 +295,7 @@ function FormatCompactGearScoreText(name)
 end
 
 -- Shared GearScore/PVP-gear/blacklist/achievement tooltip for both slot cards
--- and bench chips. Every exit path runs AddAchievementLines before Show, so
--- achievements still appear when GearScoreLite is missing.
+-- and bench chips. Every exit path runs AddAchievementLines before Show.
 function ShowGearScoreTooltip(owner, name)
 	GameTooltip:SetOwner(owner, "ANCHOR_TOP")
 	GameTooltip:SetText(name)
@@ -312,13 +304,6 @@ function ShowGearScoreTooltip(owner, name)
 	if blacklistEntry then
 		local reason = blacklistEntry.history and blacklistEntry.history[1] and blacklistEntry.history[1].reason
 		GameTooltip:AddLine("BLACKLISTED" .. (reason and (": " .. reason) or ""), 1, 0.15, 0.15)
-	end
-
-	if not GearScore_GetScore then
-		GameTooltip:AddLine("GearScoreLite not installed", 0.6, 0.6, 0.6)
-		AddAchievementLines(name)
-		GameTooltip:Show()
-		return
 	end
 
 	local entry = JohnnysRaidComp.db.global.raidCompGearScores[name]
@@ -538,7 +523,7 @@ function EnsureSlotCard(index)
 	card.nameText:SetJustifyH("CENTER")
 
 	-- GearScore (see the lookup section further down this file) - blank/"GS --" until a
-	-- lookup succeeds, or if GearScoreLite isn't installed.
+	-- lookup succeeds.
 	card.gsText = card:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	card.gsText:SetPoint("BOTTOM", 0, 5)
 	card.gsText:SetWidth(CARD_WIDTH - 8)
@@ -618,7 +603,7 @@ function SetCardState(card, slot, matchedName, matchedClass, isClassRun)
 		card.nameText:SetText(FormatNameWithClass(matchedName, matchedClass))
 
 		-- pcall'd for the same reason as RefreshComp's RequestGearScore loop -
-		-- this reads GearScoreLite's data/cache and must never be able to
+		-- this reads the GearScore cache and must never be able to
 		-- break the card itself if something about that goes wrong.
 		local ok = pcall(function()
 			local gsText, r, g, b = FormatGearScoreText(matchedName)
@@ -709,7 +694,7 @@ function EnsureBenchChip(index)
 	chip.nameText:SetJustifyH("CENTER")
 
 	-- Compact GearScore (see the lookup section further down this file) - "--" until a lookup
-	-- succeeds, or if GearScoreLite isn't installed.
+	-- succeeds.
 	chip.gsText = chip:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 	chip.gsText:SetPoint("BOTTOM", 0, 3)
 	chip.gsText:SetWidth(BENCH_CHIP_WIDTH - 6)
@@ -863,8 +848,8 @@ function RaidCompUI:RefreshComp()
 	-- shown (slotted or benched) - see the lookup section further down this
 	-- file. No-ops
 	-- for anyone already fresh or already queued. pcall'd as a hard boundary -
-	-- this talks to a third-party addon (GearScoreLite) we don't control, and
-	-- it must never be able to take the actual comp grid down with it.
+	-- inspect/item-cache reads can fail in odd ways, and they must never be
+	-- able to take the actual comp grid down with it.
 	local ok, err = pcall(function()
 		for _, member in ipairs(roster) do
 			self:RequestGearScore(member.name, member.unit)
@@ -1365,21 +1350,17 @@ RaidCompUI.OnGearScoreUpdated = function(name)
 end
 
 ----------------------------------------------------------------------------
--- GearScore/PVP-gear lookup. GearScoreLite (a separate, optional addon
--- installed alongside this one) supplies the actual score math via a global
--- GearScore_GetScore(name, unit) function, but it has no player cache, no
--- PVP/resilience detection, and no INSPECT_READY handling of its own - it
--- calls NotifyInspect and reads gear in the very same tick, so a first read
--- is very often 0 because the server's inspect data hasn't arrived on the
--- client yet. What follows owns the request/response flow around that: a
+-- GearScore/PVP-gear lookup. The score math is our own GearScoreLite-
+-- compatible formula (Modules\GearScore.lua), so GearScoreLite doesn't need
+-- to be installed. It only reads whatever gear the client can currently see,
+-- and a first read right after NotifyInspect is very often empty because the
+-- server's inspect data hasn't arrived on the client yet (or an item isn't
+-- in the item cache). What follows owns the request/response flow: a
 -- throttled NotifyInspect queue, a couple of short retries when a read comes
 -- back empty, resilience detection (reusing TooltipScan.lua's hidden scan
 -- tooltip), and a highest-score-ever-seen cache in db.global so a lucky
 -- earlier read survives an unlucky later one (and survives a /reload, since
 -- it's not tied to whichever of your own characters did the inspecting).
---
--- Degrades to a no-op if GearScoreLite isn't installed/enabled - every entry
--- point checks for GearScore_GetScore before doing any work.
 --
 -- (This lived in its own Modules\RaidCompUI\Inspect.lua file originally, but
 -- that file was silently never loading - the .toc listed it correctly and
@@ -1393,7 +1374,7 @@ local GS_STALE_SECONDS = 300 -- re-request a cached entry after this long
 local GS_RETRY_DELAY = 0.75
 local GS_MAX_RETRIES = 3
 
--- Equippable slots GearScoreLite itself reads (1-18, skipping 4 = shirt), and
+-- Equippable slots the GearScore formula reads (1-18, skipping 4 = shirt), and
 -- the slot's display name for the PVP-piece list shown in the tooltip.
 local GS_SLOT_NAMES = {
 	[1] = "Head", [2] = "Neck", [3] = "Shoulder", [5] = "Chest", [6] = "Waist",
@@ -1489,23 +1470,26 @@ local function GSQueueRetry(name, unit)
 	table.insert(gsRetryQueue, { name = name, unit = unit, fireAt = GetTime() + GS_RETRY_DELAY })
 end
 
--- The actual body, pcall'd by GSResolveScore below - GearScore_GetScore and
--- TooltipScan:GetStats both call into code we don't control (GearScoreLite,
--- and item tooltip rendering), and a failure there must never get to spam
+-- The actual body, pcall'd by GSResolveScore below - the score read and
+-- TooltipScan:GetStats both depend on inspect/item-cache data and item
+-- tooltip rendering, and a failure there must never get to spam
 -- errors from the OnUpdate pump or leave `gsInFlight[name]` stuck true
 -- forever (which would silently stop that player from ever being looked up
 -- again this session).
 local function GSResolveScoreBody(name, unit)
-	if not (GearScore_GetScore and UnitExists(unit) and UnitName(unit) == name) then
+	if not (UnitExists(unit) and UnitName(unit) == name) then
 		gsInFlight[name] = nil
 		gsRetries[name] = nil
 		return
 	end
 
-	local score, avgIlvl = GearScore_GetScore(name, unit)
+	local score, avgIlvl, incomplete = JohnnysRaidComp.GearScore:GetScore(unit)
 	local hasPvp, pvpSlots, sawAnyItem = GSScanPvpGear(unit)
 
-	if not sawAnyItem and (not score or score == 0) then
+	-- Retry an empty read, or one where some item wasn't in the item cache yet
+	-- (its score would be too low). Giving up stores nothing, so the next
+	-- RefreshComp simply requests a fresh inspect.
+	if incomplete or (not sawAnyItem and (not score or score == 0)) then
 		if (gsRetries[name] or 0) < GS_MAX_RETRIES then
 			gsRetries[name] = (gsRetries[name] or 0) + 1
 			GSQueueRetry(name, unit)
@@ -1521,7 +1505,7 @@ local function GSResolveScoreBody(name, unit)
 	RaidCompUI:StoreGearScore(name, score, avgIlvl, hasPvp, pvpSlots)
 end
 
--- Reads back GearScore_GetScore + the PVP scan for a unit that should now
+-- Reads back the GearScore + the PVP scan for a unit that should now
 -- have inspect data available. Called from two places for the same pending
 -- request - the INSPECT_READY handler, and a fallback retry timer queued
 -- right after every NotifyInspect (in case INSPECT_READY never fires, e.g.
@@ -1544,7 +1528,7 @@ end
 -- repeatedly (e.g. every RefreshComp, including the repaint a finished lookup
 -- itself triggers) - skips anyone already in flight or still fresh.
 function RaidCompUI:RequestGearScore(name, unit)
-	if not (GearScore_GetScore and name and unit and UnitExists(unit)) then
+	if not (name and unit and UnitExists(unit)) then
 		return
 	end
 	if gsInFlight[name] or GSIsFresh(name) then
@@ -1585,21 +1569,13 @@ end
 -- slot card / bench chip (see OnCardClick / OnBenchClick). Clears the member's
 -- cached score + guards, then re-queues a fresh lookup against their current
 -- unit token. Generalises the same reset the INSPECT_READY frame already does
--- for PLAYER_EQUIPMENT_CHANGED on your own name. No-op if GearScoreLite isn't
--- loaded.
+-- for PLAYER_EQUIPMENT_CHANGED on your own name.
 function RaidCompUI:ForceRescanGearScore(name)
 	if not name then
 		return
 	end
-	-- Achievements re-scan too, and don't depend on GearScoreLite - the
-	-- RefreshComp below re-requests them.
+	-- Achievements re-scan too - the RefreshComp below re-requests them.
 	AchClearPending(name)
-	if not GearScore_GetScore then
-		if RaidCompUI:IsShowingComp() then
-			RaidCompUI:RefreshComp()
-		end
-		return
-	end
 
 	GSClearPending(name)
 
@@ -1625,19 +1601,12 @@ end
 -- (which only re-requests uncached/stale members, not a true refresh). Clears
 -- every current roster member's cached score + guards and re-queues them; the
 -- gsPump throttle then spaces the NotifyInspect calls out at GS_REQUEST_INTERVAL
--- as usual, so a full 25-man repopulates over ~25s. No-op if GearScoreLite
--- isn't loaded.
+-- as usual, so a full 25-man repopulates over ~25s.
 function RaidCompUI:RescanAllGearScores()
 	local roster = self:ScanRoster()
 	-- Achievements re-scan too (see ForceRescanGearScore above).
 	for _, member in ipairs(roster) do
 		AchClearPending(member.name)
-	end
-	if not GearScore_GetScore then
-		if RaidCompUI:IsShowingComp() then
-			RaidCompUI:RefreshComp()
-		end
-		return
 	end
 
 	for _, member in ipairs(roster) do

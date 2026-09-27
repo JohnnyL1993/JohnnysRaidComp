@@ -29,7 +29,7 @@ When someone you share the hidden `JohnnysAddons` channel, guild, party or raid 
 
 ## Optional companions
 
-Johnny's Addon Hub, Gear Advisor, Blacklist, Raid Browser, Raid Roll and GearScoreLite. Each one adds features when installed but isn't required.
+None are required - GearScore is calculated by the addon itself (same numbers as GearScoreLite). Johnny's Addon Hub, Gear Advisor, Blacklist, Raid Browser and Raid Roll each add extra features when installed.
 
 ## Releasing (maintainer notes)
 

@@ -4,7 +4,7 @@
 ## Author: Johnny
 ## Version: 1.2
 ## SavedVariables: JohnnysRaidCompDB, JohnnysRaidSpamDB
-## OptionalDeps: JohnnysGearAdvisor, JohnnysBlackList, GearScoreLite, JohnnysRaidBrowser
+## OptionalDeps: JohnnysGearAdvisor, JohnnysBlackList, JohnnysRaidBrowser
 
 Libs\LibStub\LibStub.lua
 Libs\CallbackHandler-1.0\CallbackHandler-1.0.xml
@@ -13,6 +13,7 @@ Libs\AceDB-3.0\AceDB-3.0.xml
 
 Core.lua
 Modules\Skin.lua
+Modules\GearScore.lua
 Modules\WindowSettings.lua
 Modules\Launcher.lua
 Modules\VersionCheck.lua
