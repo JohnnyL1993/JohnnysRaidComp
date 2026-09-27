@@ -11,7 +11,7 @@ A World of Warcraft 3.3.5a addon for the Warmane private server. It gives you id
 
 ## Updating
 
-When someone you share the hidden `JohnnysAddons` channel, guild, party or raid with runs a newer version, a small banner appears in game with a link back to this page. Download the new release zip, delete the old `JohnnysRaidComp` folder, and extract the new one in its place.
+When someone you share the hidden `JohnnysAddons` channel, guild, party or raid with runs a newer version, a gold **"Update available"** line appears in the top-left corner of the Raid Comp window (plus one chat message). Click it for a copyable link back to this page. Download the new release zip, delete the old `JohnnysRaidComp` folder, and extract the new one in its place.
 
 `/jrc version` shows your installed version and the newest version you've seen.
 

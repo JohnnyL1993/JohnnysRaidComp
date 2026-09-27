@@ -1,10 +1,11 @@
--- In-game "update available" banner for Johnny's Raid Comp.
+-- In-game "update available" notice for Johnny's Raid Comp.
 --
 -- WoW can't reach the internet, so there's no way to ask GitHub what the
 -- latest release is. Instead every copy of the addon announces its own TOC
 -- version to other players running it, and any client that hears a higher
--- version than its own shows a small banner pointing at the GitHub Releases
--- page.
+-- version than its own shows a small "Update available" notice in the Raid
+-- Comp window's title bar (like Details! does) - no pop-up. Clicking it opens
+-- a copyable link to the GitHub Releases page.
 --
 -- Transport: Warmane blocks SendAddonMessage on public channels, so the
 -- server-wide leg is a hidden temporary chat channel carrying plain
@@ -16,11 +17,11 @@
 -- channel after joining, once to guild at login, to the group on roster
 -- changes (throttled), and a single delayed reply when we hear someone on an
 -- older version. The highest version heard is saved in
--- db.global.latestSeenVersion so the banner still shows on later logins even
+-- db.global.latestSeenVersion so the notice still shows on later logins even
 -- when nobody else is online.
 --
 -- Anyone can fake a "JRCV:99" line; the worst it does is show a pointless
--- banner, so there's no protection against it.
+-- notice, so there's no protection against it.
 
 local Skin = JohnnysRaidComp.Skin
 
@@ -41,7 +42,7 @@ local myVersion = GetAddOnMetadata(ADDON_NAME, "Version") or "0"
 local playerName = UnitName("player")
 
 local started = false
-local bannerShownThisSession = false
+local announcedThisSession = false
 local lastGroupSend = -GROUP_THROTTLE
 local lastReply = -REPLY_THROTTLE
 local replyPending = false
@@ -100,37 +101,54 @@ local function After(seconds, fn)
 end
 
 ----------------------------------------------------------------------------
--- Banner
+-- In-window notice - a gold "Update available" line with a quest "!" icon,
+-- attached to a host frame's title bar (the Raid Comp window, via
+-- AttachNotice below). Hidden until a newer version is known. Clicking it
+-- toggles a small drop-down holding a read-only, copyable link.
 ----------------------------------------------------------------------------
-local banner
+local notices = {} -- every attached notice button, so a late find updates all
 
-local function BuildBanner()
-	banner = CreateFrame("Frame", "JohnnysRaidCompUpdateBanner", UIParent)
-	banner:SetSize(360, 70)
-	banner:SetPoint("TOP", UIParent, "TOP", 0, -120)
-	banner:SetFrameStrata("DIALOG")
-	Skin:StylePanel(banner)
-	banner:SetMovable(true)
-	banner:EnableMouse(true)
-	banner:RegisterForDrag("LeftButton")
-	banner:SetScript("OnDragStart", banner.StartMoving)
-	banner:SetScript("OnDragStop", banner.StopMovingOrSizing)
-	banner:SetClampedToScreen(true)
+local function LatestNewerVersion()
+	local latest = JohnnysRaidComp.db.global.latestSeenVersion
+	if latest and CompareVersions(latest, myVersion) > 0 then
+		return latest
+	end
+end
 
-	local text = banner:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-	text:SetPoint("TOPLEFT", 10, -10)
-	text:SetPoint("TOPRIGHT", -30, -10)
-	text:SetJustifyH("LEFT")
-	banner.text = text
+local function RefreshNotice(notice)
+	local latest = LatestNewerVersion()
+	if latest then
+		notice.text:SetText("Update available: v" .. latest)
+		notice:SetWidth(notice.text:GetStringWidth() + 24)
+		notice:Show()
+	else
+		notice:Hide()
+		notice.linkPanel:Hide()
+	end
+end
 
-	local close = Skin:CreateButton(banner, 18, 18, "x")
-	close:SetPoint("TOPRIGHT", -6, -6)
-	close:SetScript("OnClick", function() banner:Hide() end)
+local function RefreshAllNotices()
+	for _, notice in ipairs(notices) do
+		RefreshNotice(notice)
+	end
+end
 
-	-- Read-only URL box: re-selects everything on focus/click and undoes any
-	-- typing, so it's just a place to Ctrl+C the link from.
-	local urlHolder = Skin:CreateEditBox(banner, 340, 20)
-	urlHolder:SetPoint("BOTTOM", 0, 10)
+local function BuildLinkPanel(notice, host)
+	local panel = CreateFrame("Frame", nil, host)
+	panel:SetSize(330, 48)
+	panel:SetPoint("TOPLEFT", notice, "BOTTOMLEFT", 0, -2)
+	panel:SetFrameLevel(host:GetFrameLevel() + 20)
+	Skin:StylePanel(panel)
+	panel:EnableMouse(true)
+
+	local label = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	label:SetPoint("TOPLEFT", 8, -7)
+	label:SetText(("You have v%s. Copy the link with Ctrl+C:"):format(myVersion))
+
+	-- Read-only: re-selects everything on focus/click and undoes any typing,
+	-- so it's just a place to Ctrl+C the link from.
+	local urlHolder = Skin:CreateEditBox(panel, 314, 20)
+	urlHolder:SetPoint("BOTTOM", 0, 6)
 	local edit = urlHolder.editBox
 	edit:SetText(RELEASES_URL)
 	edit:SetScript("OnEditFocusGained", function(self) self:HighlightText() end)
@@ -142,17 +160,20 @@ local function BuildBanner()
 		end
 	end)
 	edit:SetCursorPosition(0)
+	panel.edit = edit
 
-	banner:Hide()
+	panel:Hide()
+	return panel
 end
 
-local function ShowBanner(newVersion)
-	if not banner then
-		BuildBanner()
+local function ToggleLinkPanel(notice)
+	local panel = notice.linkPanel
+	if panel:IsShown() then
+		panel:Hide()
+	else
+		panel:Show()
+		panel.edit:SetFocus()
 	end
-	banner.text:SetText(("Version |cff66ff66%s|r is available (you have %s).\nCopy the link below with Ctrl+C:"):format(newVersion, myVersion))
-	banner:Show()
-	bannerShownThisSession = true
 end
 
 ----------------------------------------------------------------------------
@@ -216,10 +237,11 @@ local function OnVersionHeard(version, sender, reply)
 		if not db.latestSeenVersion or CompareVersions(version, db.latestSeenVersion) > 0 then
 			db.latestSeenVersion = version
 		end
-		if not bannerShownThisSession then
-			Print(("version %s is available (you have %s) - %s"):format(db.latestSeenVersion, myVersion, RELEASES_URL))
-			ShowBanner(db.latestSeenVersion)
+		if not announcedThisSession then
+			announcedThisSession = true
+			Print(("version %s is available (you have %s) - open /jrc and click \"Update available\" for the link."):format(db.latestSeenVersion, myVersion))
 		end
+		RefreshAllNotices()
 	elseif cmp < 0 then
 		ScheduleReply(reply)
 	end
@@ -277,12 +299,13 @@ eventFrame:RegisterEvent("RAID_ROSTER_UPDATE")
 
 local function OnFirstEnterWorld()
 	local db = JohnnysRaidComp.db.global
-	if db.latestSeenVersion then
-		if CompareVersions(db.latestSeenVersion, myVersion) > 0 then
-			ShowBanner(db.latestSeenVersion)
-		else
-			db.latestSeenVersion = nil
-		end
+	if db.latestSeenVersion and CompareVersions(db.latestSeenVersion, myVersion) <= 0 then
+		db.latestSeenVersion = nil -- we've updated since it was seen
+	end
+	RefreshAllNotices()
+	if LatestNewerVersion() then
+		announcedThisSession = true
+		Print(("version %s is available (you have %s) - open /jrc and click \"Update available\" for the link."):format(db.latestSeenVersion, myVersion))
 	end
 
 	After(JOIN_DELAY, JoinVersionChannel)
@@ -316,15 +339,51 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 end)
 
 ----------------------------------------------------------------------------
--- Public - used by "/jrc version" in Modules\Launcher.lua.
+-- Public
 ----------------------------------------------------------------------------
 JohnnysRaidComp.VersionCheck = {}
 
+-- Adds the "Update available" notice to a window's top-left corner (called
+-- from Modules\RaidCompUI\UI.lua's BuildFrame). Safe to call any time; it
+-- shows straight away if a newer version is already known.
+function JohnnysRaidComp.VersionCheck:AttachNotice(host)
+	local notice = CreateFrame("Button", nil, host)
+	notice:SetHeight(20)
+	notice:SetPoint("TOPLEFT", 8, -6)
+
+	local icon = notice:CreateTexture(nil, "OVERLAY")
+	icon:SetTexture("Interface\\GossipFrame\\AvailableQuestIcon")
+	icon:SetSize(16, 16)
+	icon:SetPoint("LEFT", 0, 0)
+
+	local text = notice:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	text:SetPoint("LEFT", icon, "RIGHT", 4, 0)
+	notice.text = text
+
+	notice:SetScript("OnEnter", function(self)
+		self.text:SetTextColor(1, 1, 1)
+		GameTooltip:SetOwner(self, "ANCHOR_BOTTOMRIGHT")
+		GameTooltip:SetText("Click for the download link")
+		GameTooltip:Show()
+	end)
+	notice:SetScript("OnLeave", function(self)
+		self.text:SetTextColor(1, 0.82, 0)
+		GameTooltip:Hide()
+	end)
+	notice:SetScript("OnClick", ToggleLinkPanel)
+
+	notice.linkPanel = BuildLinkPanel(notice, host)
+	host:HookScript("OnHide", function() notice.linkPanel:Hide() end)
+
+	table.insert(notices, notice)
+	RefreshNotice(notice)
+	return notice
+end
+
 function JohnnysRaidComp.VersionCheck:PrintStatus()
-	local latest = JohnnysRaidComp.db.global.latestSeenVersion
-	if latest and CompareVersions(latest, myVersion) > 0 then
-		Print(("installed %s, newer version %s seen - %s"):format(myVersion, latest, RELEASES_URL))
-		ShowBanner(latest)
+	local latest = LatestNewerVersion()
+	if latest then
+		Print(("installed %s, newer version %s available - %s"):format(myVersion, latest, RELEASES_URL))
 	else
 		Print(("installed %s - no newer version seen."):format(myVersion))
 	end

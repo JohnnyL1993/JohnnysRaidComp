@@ -1295,6 +1295,10 @@ local function BuildFrame()
 		JohnnysRaidComp.WindowSettings:Register(mainFrame, "raidcomp", "Raid Comp")
 	end
 
+	-- "Update available" line in the top-left corner, hidden unless a newer
+	-- version has been seen (see Modules\VersionCheck.lua).
+	JohnnysRaidComp.VersionCheck:AttachNotice(mainFrame)
+
 	BuildRaidListPage()
 	BuildSizeListPage()
 	BuildCompPage()
