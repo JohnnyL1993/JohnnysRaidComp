@@ -1,0 +1,25 @@
+## Interface: 30300
+## Title: Johnny's Raid Comp
+## Notes: Ideal-comp templates per raid/size with live roster matching, manual slot assignments, class-run tank/healer picks, GearScore/blacklist lookups, and a built-in Raid Spammer (dual-channel LFM chat timer) opened from the panel.
+## Author: Johnny
+## Version: 1.2
+## SavedVariables: JohnnysRaidCompDB, JohnnysRaidSpamDB
+## OptionalDeps: JohnnysGearAdvisor, JohnnysBlackList, GearScoreLite, JohnnysRaidBrowser
+
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.xml
+Libs\AceAddon-3.0\AceAddon-3.0.xml
+Libs\AceDB-3.0\AceDB-3.0.xml
+
+Core.lua
+Modules\Skin.lua
+Modules\WindowSettings.lua
+Modules\Launcher.lua
+Modules\VersionCheck.lua
+
+Modules\RaidCompUI\Data.lua
+Modules\RaidCompUI\UI.lua
+Modules\RaidCompUI\Init.lua
+
+Modules\RaidSpam\Core.lua
+Modules\RaidSpamUI\Init.lua

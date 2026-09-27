@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # git archive honours .gitattributes export-ignore, so the zip holds only
+      # the addon files, wrapped in a JohnnysRaidComp/ folder ready to drop into
+      # Interface\AddOns.
+      - name: Build addon zip
+        run: git archive --prefix=JohnnysRaidComp/ -o "JohnnysRaidComp-${GITHUB_REF_NAME}.zip" HEAD
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "JohnnysRaidComp-${GITHUB_REF_NAME}.zip" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "JohnnysRaidComp-${GITHUB_REF_NAME}.zip" --title "$GITHUB_REF_NAME" --generate-notes
+          fi
