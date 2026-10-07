@@ -38,6 +38,7 @@ None of these are required. Raid Comp works on its own, and it calculates GearSc
 | [Johnny's Gear Advisor](https://github.com/JohnnyL1993/JohnnysGearAdvisor) ★ | Shows upgrade candidates for your gear based on class, spec and hit/expertise. Raid Comp uses it for spec detection and PvP gear detection. |
 | [Johnny's Raid Browser](https://github.com/JohnnyL1993/JohnnysRaidBrowser) ★ | Window listing advertised raids with role/GS filters and one-click whisper/join. Needs the RaidBrowser addon. Adds a Raid Comp launcher button. |
 | [Johnny's Raid Roll](https://github.com/JohnnyL1993/JohnnysRaidRoll) ★ | Flat-skinned windows for the RaidRoll addon's rolls, loot tracker and settings. Needs RaidRoll. Adds Raid Comp launcher buttons. |
+| [Johnny's Professions](https://github.com/JohnnyL1993/JohnnysProfessions) | All-in-one profession companion: 1-450 leveling guides, shopping list, item tracker, AH prices, profits, cooldowns and alts. |
 | [Johnny's Messenger](https://github.com/JohnnyL1993/JohnnysMessenger) | Teams-style whisper messenger with a conversation list and threads. |
 | [Johnny's Currency Tracker](https://github.com/JohnnyL1993/JohnnysCurrencyBar) | Draggable bar tracking Honor, Arena Points, Stone Keeper's Shards, Wintergrasp marks and Emblems. |
 
