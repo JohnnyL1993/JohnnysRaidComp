@@ -7,6 +7,10 @@ local defaults = {
 		raidCompPanelPosition = { point = "CENTER", relativePoint = "CENTER", x = 0, y = 0 },
 		raidCompManualAssignments = {},
 		raidCompRoleCounts = {},
+		-- Off = no class-pinned slots (Shaman, Mage, ...); every DPS/healer
+		-- slot is a plain "Any DPS"/"Any Healer". Toggled from the comp
+		-- screen's "Class slots" button, applies to every raid+size.
+		raidCompClassPins = true,
 		raidCompClassRunTank = {},
 		raidCompClassRunHealers = {},
 		-- Standalone launcher (see Modules\Launcher.lua) - only used when

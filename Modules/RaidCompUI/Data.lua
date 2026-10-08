@@ -242,6 +242,15 @@ end
 -- which of those slots get pinned to a specific class, same as before.
 function RaidCompUI:BuildTemplate(raidKey, sizeKey, counts)
 	local profile = RAID_PROFILES[raidKey] or {}
+	-- Class slots switched off (raidCompClassPins) - build from an empty
+	-- profile so every slot is generic. SavedVariables aren't loaded yet when
+	-- this runs at file load, so those default templates always have pins;
+	-- RaidCompUI:RebuildTemplate applies the setting before anything's shown.
+	local db = JohnnysRaidComp.db
+	local classPins = not (db and db.profile.raidCompClassPins == false)
+	if not classPins then
+		profile = {}
+	end
 	local isLarge = (sizeKey == "25" or sizeKey == "25H")
 	local slots = {}
 
@@ -274,7 +283,9 @@ function RaidCompUI:BuildTemplate(raidKey, sizeKey, counts)
 		table.insert(slots, { role = "DAMAGER", label = "Any DPS" })
 	end
 
-	return { slots = slots, needed = { TANK = counts.TANK, HEALER = counts.HEALER, DAMAGER = counts.DAMAGER } }
+	-- classPins records which setting this was built under, so a stale
+	-- template can be spotted (see RaidSpamUI's EnsureTemplateBuilt).
+	return { slots = slots, needed = { TANK = counts.TANK, HEALER = counts.HEALER, DAMAGER = counts.DAMAGER }, classPins = classPins }
 end
 
 -- "Class Run" - one slot per WotLK class (10 total), matched on class alone

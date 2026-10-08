@@ -1,6 +1,6 @@
 # Johnny's Raid Comp
 
-A World of Warcraft 3.3.5a addon for the Warmane private server. It gives you ideal-comp templates for each raid and size, matches them against your live roster, and supports manual slot assignments, class-run tank/healer picks, and GearScore and blacklist lookups. It also includes a Raid Spammer, a two-channel LFM chat timer.
+A World of Warcraft 3.3.5a addon for the Warmane private server. It gives you ideal-comp templates for each raid and size, matches them against your live roster, and supports manual slot assignments, class-run tank/healer picks, and GearScore and blacklist lookups. It also includes a Raid Spammer, an LFM chat timer that posts to any ticked channels (General, Trade, LookingForGroup, Yell), each on its own interval.
 
 ## Install
 
@@ -29,13 +29,13 @@ When someone you share the hidden `JohnnysAddons` channel, guild, party or raid 
 
 ## Other Johnny's addons
 
-None of these are required. Raid Comp works on its own, and it calculates GearScore itself (same numbers as GearScoreLite). The ones marked **★** add extra features to Raid Comp when installed.
+None of these are required. Raid Comp works on its own: it calculates GearScore itself (same numbers as GearScoreLite) and does its own PvP gear and spec detection. The ones marked **★** add extra features to Raid Comp when installed.
 
 | Addon | What it does |
 | --- | --- |
 | [Johnny's Warmane Addon Hub](https://github.com/JohnnyL1993/JohnnysAddonHub) ★ | Always-on-screen launcher bar with a button for each of Johnny's addons you have installed. Replaces Raid Comp's own minimap button/panel. |
 | [Johnny's Blacklist](https://github.com/JohnnyL1993/JohnnysBlackList) ★ | Blacklist players, auto-ignore their whispers, and get warned when you see them. Raid Comp flags blacklisted raid members. |
-| [Johnny's Gear Advisor](https://github.com/JohnnyL1993/JohnnysGearAdvisor) ★ | Shows upgrade candidates for your gear based on class, spec and hit/expertise. Raid Comp uses it for spec detection and PvP gear detection. |
+| [Johnny's Gear Advisor](https://github.com/JohnnyL1993/JohnnysGearAdvisor) ★ | Shows upgrade candidates for your gear based on class, spec and hit/expertise. Adds a Raid Comp launcher button. |
 | [Johnny's Raid Browser](https://github.com/JohnnyL1993/JohnnysRaidBrowser) ★ | Window listing advertised raids with role/GS filters and one-click whisper/join. Needs the RaidBrowser addon. Adds a Raid Comp launcher button. |
 | [Johnny's Raid Roll](https://github.com/JohnnyL1993/JohnnysRaidRoll) ★ | Flat-skinned windows for the RaidRoll addon's rolls, loot tracker and settings. Needs RaidRoll. Adds Raid Comp launcher buttons. |
 | [Johnny's Professions](https://github.com/JohnnyL1993/JohnnysProfessions) | All-in-one profession companion: 1-450 leveling guides, shopping list, item tracker, AH prices, profits, cooldowns and alts. |

@@ -4,12 +4,12 @@ local defaults = {
 	profile = {
 		raidSpamRecruitGS = 0,
 		raidSpamRecruitTemplate = "[LFM] {raid} ({size}) - GS {gs}+ required - Need: {need} - {quest} - whisper me!",
-		-- Channel 1 and Channel 2 broadcast the same composed message to two
-		-- destinations, each on its own repeat timer / Start-Stop.
-		raidSpamRecruitChannel = "",
-		raidSpamRecruitInterval = 90,
-		raidSpamRecruitChannel2 = "",
-		raidSpamRecruitInterval2 = 120,
+		-- Per-channel tick + repeat interval for the Channels list, keyed by the
+		-- channel's lowercased base name ("trade", "global") or chat type
+		-- ("YELL"): { enabled = bool, interval = sec }.
+		-- The old Channel 1/Channel 2 settings (raidSpamRecruitChannel/Interval
+		-- and ...2) are migrated into this once; see MigrateLegacyChannels.
+		raidSpamChannels = {},
 		raidSpamWeeklyQuestName = "",
 		raidSpamPanelPosition = { point = "CENTER", relativePoint = "CENTER", x = 0, y = 0 },
 		-- Docked = snapped to the Raid Comp window's right edge and moving with

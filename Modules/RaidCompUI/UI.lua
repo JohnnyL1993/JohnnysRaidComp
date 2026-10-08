@@ -77,11 +77,41 @@ local selection = nil
 -- "look at this" cue, and a re-inspect on login naturally re-flags a real change.
 local gsChanged = {}
 
-local SPEC_ROLE_MAP = { tank = "TANK", healer = "HEALER", dps = "DAMAGER" }
+-- Role of each talent tree, in the talent frame's fixed left-to-right tab
+-- order for 3.3.5a - the tree with the most points is taken as your spec.
+local TALENT_TAB_ROLES = {
+	WARRIOR = { "DAMAGER", "DAMAGER", "TANK" },          -- Arms, Fury, Protection
+	PALADIN = { "HEALER", "TANK", "DAMAGER" },           -- Holy, Protection, Retribution
+	HUNTER = { "DAMAGER", "DAMAGER", "DAMAGER" },
+	ROGUE = { "DAMAGER", "DAMAGER", "DAMAGER" },
+	PRIEST = { "HEALER", "HEALER", "DAMAGER" },          -- Discipline, Holy, Shadow
+	DEATHKNIGHT = { "TANK", "DAMAGER", "DAMAGER" },      -- Blood, Frost, Unholy
+	SHAMAN = { "DAMAGER", "DAMAGER", "HEALER" },         -- Elemental, Enhancement, Restoration
+	MAGE = { "DAMAGER", "DAMAGER", "DAMAGER" },
+	WARLOCK = { "DAMAGER", "DAMAGER", "DAMAGER" },
+	DRUID = { "DAMAGER", "DAMAGER", "HEALER" },          -- Balance, Feral, Restoration
+}
+
+-- Your own role from your active talents - no inspect needed, since your own
+-- talents can be read directly. nil if no points are spent yet.
+local function GetPlayerSpecRole(class)
+	local roles = TALENT_TAB_ROLES[class]
+	if not roles then
+		return nil
+	end
+	local bestTab, bestPoints = nil, 0
+	for tabIndex = 1, GetNumTalentTabs() do
+		local _, _, pointsSpent = GetTalentTabInfo(tabIndex)
+		if (pointsSpent or 0) > bestPoints then
+			bestTab, bestPoints = tabIndex, pointsSpent
+		end
+	end
+	return bestTab and roles[bestTab]
+end
 
 -- Resolves a unit's role: the manually-set raid-frame role icon if present,
--- else (for the player only) the real active talent spec via SpecDetect - no
--- inspect needed since that reads your own talents directly - else a rough
+-- else (for the player only) the real active talent spec via GetPlayerSpecRole
+-- - no inspect needed since that reads your own talents directly - else a rough
 -- per-class guess (see RaidCompUI.CLASS_DEFAULT_ROLE) so the member still
 -- shows up instead of being silently dropped.
 local function ResolveUnitRole(unit, class)
@@ -93,10 +123,10 @@ local function ResolveUnitRole(unit, class)
 	-- UnitIsUnit, not a string == "player" check - in an actual raid the
 	-- player's own unit token is "raidN" for whichever N they're slotted at,
 	-- not literally "player".
-	if UnitIsUnit(unit, "player") and IsAddOnLoaded("JohnnysGearAdvisor") and JohnnysGearAdvisor and JohnnysGearAdvisor.SpecDetect then
-		local _, _, _, role = JohnnysGearAdvisor.SpecDetect:GetActiveSpec()
-		if role and SPEC_ROLE_MAP[role] then
-			return SPEC_ROLE_MAP[role]
+	if UnitIsUnit(unit, "player") then
+		local role = GetPlayerSpecRole(class)
+		if role then
+			return role
 		end
 	end
 
@@ -970,7 +1000,9 @@ end
 -- may now mean something different.
 ----------------------------------------------------------------------------
 local function RebuildCurrentTemplate(templateKey, counts)
-	RaidCompUI.TEMPLATES[templateKey] = RaidCompUI:BuildTemplate(currentRaid, currentSize, counts)
+	-- `counts` is already saved (or cleared back to default) by the caller,
+	-- which is exactly what RebuildTemplate reads.
+	RaidCompUI:RebuildTemplate(currentRaid, currentSize)
 	JohnnysRaidComp.db.profile.raidCompManualAssignments[templateKey] = nil
 	ClearSelection()
 	RaidCompUI:RefreshComp()
@@ -1011,18 +1043,35 @@ local function ResetCounts()
 	RebuildCurrentTemplate(templateKey, RaidCompUI:GetDefaultCounts(currentRaid, currentSize))
 end
 
--- Applies a saved custom count (if any) to the template before it's shown -
--- SavedVariables aren't loaded yet when Data.lua builds the default
--- RaidCompUI.TEMPLATES at file-load time, so this is where a persisted
--- override actually takes effect.
-local function ApplySavedCounts(raidKey, sizeKey)
+-- Rebuilds a raid+size's template from its saved custom count (if any) and
+-- the Class slots setting - SavedVariables aren't loaded yet when Data.lua
+-- builds the default RaidCompUI.TEMPLATES at file-load time, so this is where
+-- both actually take effect. Public so the Raid Spammer's {need} sees the same
+-- slots without the comp window having been opened.
+function RaidCompUI:RebuildTemplate(raidKey, sizeKey)
 	if sizeKey == "CLASSRUN" then
 		return
 	end
 	local templateKey = raidKey .. "_" .. sizeKey
-	local custom = JohnnysRaidComp.db.profile.raidCompRoleCounts[templateKey]
-	if custom then
-		RaidCompUI.TEMPLATES[templateKey] = RaidCompUI:BuildTemplate(raidKey, sizeKey, custom)
+	local counts = JohnnysRaidComp.db.profile.raidCompRoleCounts[templateKey]
+		or RaidCompUI:GetDefaultCounts(raidKey, sizeKey)
+	local template = RaidCompUI:BuildTemplate(raidKey, sizeKey, counts)
+	template.fromSaved = true
+	RaidCompUI.TEMPLATES[templateKey] = template
+end
+
+-- Class slots on/off (raidCompClassPins) - global, so every raid+size picks
+-- it up on its next RebuildTemplate. Only the open template is rebuilt now.
+-- Pinned slots sit before the "Any" slots of their role, so slot indices keep
+-- their meaning and manual swaps are left alone.
+local function ToggleClassPins()
+	local profile = JohnnysRaidComp.db.profile
+	profile.raidCompClassPins = not profile.raidCompClassPins
+	countControls.classPins.text:SetText(profile.raidCompClassPins and "Class slots: On" or "Class slots: Off")
+	if currentRaid and currentSize and currentSize ~= "CLASSRUN" then
+		RaidCompUI:RebuildTemplate(currentRaid, currentSize)
+		ClearSelection()
+		RaidCompUI:RefreshComp()
 	end
 end
 
@@ -1092,7 +1141,7 @@ function RaidCompUI:ShowComp(raidKey, sizeKey)
 	JohnnysRaidComp.db.profile.raidCompSelectedSize = sizeKey
 	compBackAction = function() ShowSizeList(raidKey) end
 	ClearSelection()
-	ApplySavedCounts(raidKey, sizeKey)
+	self:RebuildTemplate(raidKey, sizeKey)
 
 	HideAllPages()
 	compPage:Show()
@@ -1211,6 +1260,13 @@ local function BuildCompPage()
 	countControls.reset = Skin:CreateButton(compPage, 60, 20, "Reset")
 	countControls.reset:SetPoint("TOPRIGHT", compPage, "TOPRIGHT", 0, -2)
 	countControls.reset:SetScript("OnClick", function() ResetCounts() end)
+
+	-- Lives in countControls so Class Run hides it along with the +/- (see
+	-- RefreshComp) - a Class Run is nothing but class slots.
+	countControls.classPins = Skin:CreateButton(compPage, 110, 20,
+		JohnnysRaidComp.db.profile.raidCompClassPins and "Class slots: On" or "Class slots: Off")
+	countControls.classPins:SetPoint("RIGHT", countControls.reset, "LEFT", -6, 0)
+	countControls.classPins:SetScript("OnClick", ToggleClassPins)
 
 	-- Class Run's single "Classes represented: X/10" line, shown instead of
 	-- the tank/healer/dps trio above (see RefreshComp).
@@ -1361,8 +1417,8 @@ end
 -- server's inspect data hasn't arrived on the client yet (or an item isn't
 -- in the item cache). What follows owns the request/response flow: a
 -- throttled NotifyInspect queue, a couple of short retries when a read comes
--- back empty, resilience detection (reusing TooltipScan.lua's hidden scan
--- tooltip), and a highest-score-ever-seen cache in db.global so a lucky
+-- back empty, resilience detection (our own hidden scan tooltip - see
+-- ItemHasResilience), and a highest-score-ever-seen cache in db.global so a lucky
 -- earlier read survives an unlucky later one (and survives a /reload, since
 -- it's not tied to whichever of your own characters did the inspecting).
 --
@@ -1448,10 +1504,38 @@ function RaidCompUI:StoreGearScore(name, score, avgIlvl, hasPvpGear, pvpSlots)
 	end
 end
 
--- Scans the (now-inspected) unit's equipped gear for a resilience line,
--- reusing TooltipScan's hidden scan tooltip and its "resilienceRating"
--- pattern (see TooltipScan.lua). Also reports whether any equipped-item data
--- was actually readable yet, so callers can tell "no PVP gear" apart from
+-- 3.3.5a has no GetItemStats, so resilience is read the way Pawn does it:
+-- render the item into a hidden tooltip and pattern-match its lines.
+-- English-client text, like the rest of the addon.
+local pvpScanTooltip = CreateFrame("GameTooltip", "JohnnysRaidCompScanTooltip", nil, "GameTooltipTemplate")
+local RESILIENCE_PATTERNS = {
+	"Improves your resilience rating by %d+",
+	"Increases your resilience rating by %d+",
+}
+
+-- True if an item's own stats include resilience. "Use:"/proc lines are
+-- skipped so a temporary effect doesn't flag a PvE item.
+local function ItemHasResilience(link)
+	pvpScanTooltip:SetOwner(UIParent, "ANCHOR_NONE")
+	pvpScanTooltip:ClearLines()
+	pvpScanTooltip:SetHyperlink(link)
+	for i = 2, pvpScanTooltip:NumLines() do
+		local fontString = _G["JohnnysRaidCompScanTooltipTextLeft" .. i]
+		local text = fontString and fontString:GetText()
+		if text and not (text:find("^Use:") or text:find("Chance on") or text:find(" for %d+ sec")) then
+			for _, pattern in ipairs(RESILIENCE_PATTERNS) do
+				if text:find(pattern) then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+-- Scans the (now-inspected) unit's equipped gear for a resilience line (see
+-- ItemHasResilience). Also reports whether any equipped-item data was
+-- actually readable yet, so callers can tell "no PVP gear" apart from
 -- "inspect data hasn't arrived".
 local function GSScanPvpGear(unit)
 	local hasPvp, slots, sawAnyItem = false, {}, false
@@ -1459,9 +1543,7 @@ local function GSScanPvpGear(unit)
 		local link = GetInventoryItemLink(unit, slotId)
 		if link then
 			sawAnyItem = true
-			local stats = IsAddOnLoaded("JohnnysGearAdvisor") and JohnnysGearAdvisor and JohnnysGearAdvisor.TooltipScan
-				and JohnnysGearAdvisor.TooltipScan:GetStats(link)
-			if stats and stats.resilienceRating then
+			if ItemHasResilience(link) then
 				hasPvp = true
 				slots[slotName] = true
 			end
@@ -1475,7 +1557,7 @@ local function GSQueueRetry(name, unit)
 end
 
 -- The actual body, pcall'd by GSResolveScore below - the score read and
--- TooltipScan:GetStats both depend on inspect/item-cache data and item
+-- ItemHasResilience both depend on inspect/item-cache data and item
 -- tooltip rendering, and a failure there must never get to spam
 -- errors from the OnUpdate pump or leave `gsInFlight[name]` stuck true
 -- forever (which would silently stop that player from ever being looked up

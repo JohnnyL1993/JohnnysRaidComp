@@ -4,8 +4,9 @@
 -- RaidCompUI:ScanRoster/BuildMatches), on a repeating SendChatMessage timer
 -- clamped to a 30-second floor so it doesn't hit WoW's chat throttle.
 --
--- Two independent channels: the same message can go to two places (e.g. a
--- custom LFM channel and Guild) each on its own interval and its own Start/Stop.
+-- Channels list: General, Trade, LookingForGroup and Yell, each with a tick
+-- box and its own interval. One Start/Stop runs every ticked
+-- channel, each on its own timer.
 JohnnysRaidSpam.RaidSpamUI = JohnnysRaidSpam.RaidSpamUI or {}
 local RaidSpamUI = JohnnysRaidSpam.RaidSpamUI
 -- Shares Johnny's Raid Comp's Skin now that the Spammer ships inside that addon
@@ -21,8 +22,19 @@ local function GetRaidCompUI()
 	return nil
 end
 
-local FRAME_WIDTH, FRAME_HEIGHT = 480, 630
+-- Height without any channel rows; each row adds CHANNEL_ROW_H (see
+-- RefreshChannelRows), so a long joined-channel list never clips.
+local FRAME_WIDTH, BASE_HEIGHT = 480, 396
 local MIN_INTERVAL = 30
+local DEFAULT_INTERVAL = 90
+-- Minimum gap between any two sends, so starting with several channels ticked
+-- doesn't fire them all in the same frame.
+local SEND_SPACING = 2
+-- How soon to retry a channel that couldn't be sent to (not joined, no raid
+-- picked, ...) instead of waiting out its full interval.
+local RETRY_DELAY = 5
+-- How long a row shows "Sent" after posting before going back to a countdown.
+local SENT_FLASH = 3
 local FIELD_WIDTH = FRAME_WIDTH - 44
 -- Narrower than FIELD_WIDTH so the "Reset" button fits to the right of it.
 local TEMPLATE_BOX_WIDTH = FIELD_WIDTH - 70
@@ -32,8 +44,6 @@ local DEFAULT_RECRUIT_TEMPLATE = "[LFM] {raid} ({size}) - GS {gs}+ required - Ne
 local mainFrame
 
 local recruitRaidText, recruitNeedText, recruitTemplateBox, recruitPreviewText, recruitGSBox
-local recruitChannelBox, recruitIntervalBox, recruitStartBtn, recruitStatusText, recruitSpammer
-local recruitChannel2Box, recruitInterval2Box, recruitStart2Btn, recruitStatus2Text, recruitSpammer2
 
 local previewTicker
 
@@ -43,44 +53,121 @@ local questLogEntries = {}
 ----------------------------------------------------------------------------
 -- Shared helpers
 ----------------------------------------------------------------------------
-local SPECIAL_CHAT_TYPES = { SAY = true, YELL = true, GUILD = true, OFFICER = true, RAID = true, PARTY = true }
+-- The Channels list, in display order. Numbered channels are keyed by their
+-- lowercased base name and always listed - "(not joined)" when you're not in
+-- them - so they can be ticked ahead of time.
+local CHANNEL_LIST = {
+	{ key = "general", name = "General", channel = true },
+	{ key = "trade", name = "Trade", channel = true },
+	{ key = "lookingforgroup", name = "LookingForGroup", channel = true },
+	{ key = "YELL", name = "Yell", chatType = "YELL" },
+}
+-- Chat types the old free-typed Channel 1/2 boxes accepted (see LegacyChannelKey).
+local FIXED_KEYS = { SAY = true, YELL = true, GUILD = true, RAID = true }
 
--- Resolves free-typed channel text to a SendChatMessage chat type + channel
--- number. Re-resolved on every send (not cached) since a custom channel's
--- number can shift between joins/relogs.
-local function ResolveChannelType(input)
+-- "Trade - City" -> "Trade"; custom channels have no suffix.
+local function BaseChannelName(name)
+	return name:match("^(.-)%s+%-%s+") or name
+end
+
+-- Current number of a joined channel by its lowercased base name, or nil.
+-- Looked up on every send (not cached) since a custom channel's number can
+-- shift between joins/relogs.
+local function FindChannelNum(key)
+	local list = { GetChannelList() }
+	for i = 1, #list, 2 do
+		local id, name = list[i], list[i + 1]
+		if type(name) == "string" and BaseChannelName(name):lower() == key then
+			return id
+		end
+	end
+	return nil
+end
+
+-- Rows for the Channels list, labelled with each channel's current number
+-- ("General (1)") or "(not joined)".
+local function GetChannelRows()
+	local rows = {}
+	for _, entry in ipairs(CHANNEL_LIST) do
+		local label = entry.name
+		if entry.channel then
+			local num = FindChannelNum(entry.key)
+			label = label .. (num and (" (" .. num .. ")") or " (not joined)")
+		end
+		table.insert(rows, { key = entry.key, label = label, channel = entry.channel, chatType = entry.chatType })
+	end
+	return rows
+end
+
+-- Why a row can't be posted to right now, or nil if it can.
+local function RowUnavailableReason(row)
+	if row.channel and not FindChannelNum(row.key) then
+		return "Not joined"
+	end
+	return nil
+end
+
+local function GetRowConfig(key)
+	return JohnnysRaidSpam.db.profile.raidSpamChannels[key]
+end
+
+-- Only creates the saved entry on first write, so rows you never touch don't
+-- pile up in SavedVariables.
+local function EnsureRowConfig(key)
+	local all = JohnnysRaidSpam.db.profile.raidSpamChannels
+	all[key] = all[key] or { enabled = false, interval = DEFAULT_INTERVAL }
+	return all[key]
+end
+
+local function IsRowEnabled(key)
+	local cfg = GetRowConfig(key)
+	return cfg and cfg.enabled
+end
+
+local function GetRowInterval(key)
+	local cfg = GetRowConfig(key)
+	return math.max(MIN_INTERVAL, (cfg and tonumber(cfg.interval)) or DEFAULT_INTERVAL)
+end
+
+-- Maps an old free-typed Channel 1/2 entry ("Trade", "yell", "5", ...) to a
+-- Channels-list row key.
+local function LegacyChannelKey(input)
 	if not input or input == "" then
 		return nil
 	end
 	local upper = input:upper()
-	if SPECIAL_CHAT_TYPES[upper] then
-		return upper, nil
+	if FIXED_KEYS[upper] then
+		return upper
 	end
-
-	-- A plain number is a channel index typed directly (e.g. "2" for Trade).
-	local asNum = tonumber(input)
-	if asNum and asNum > 0 and asNum == math.floor(asNum) then
-		return "CHANNEL", asNum
+	local num = tonumber(input)
+	if num then
+		local _, name = GetChannelName(num)
+		return name and BaseChannelName(name):lower() or nil
 	end
+	return BaseChannelName(input):lower()
+end
 
-	-- Exact / prefix match on the channel name.
-	local channelNum = GetChannelName(input)
-	if channelNum and channelNum > 0 then
-		return "CHANNEL", channelNum
+-- One-time carry-over of the old two-channel settings into raidSpamChannels:
+-- whatever was in Channel 1/2 comes back ticked with its old interval.
+local function MigrateLegacyChannels()
+	local profile = JohnnysRaidSpam.db.profile
+	if profile.raidSpamChannelsMigrated then
+		return
 	end
-
-	-- Substring match against the channels you're joined to, so a "Trade"
-	-- preset resolves even though the real channel name is "Trade - City".
-	local list = { GetChannelList() }
-	local want = input:lower()
-	for i = 1, #list, 2 do
-		local id, name = list[i], list[i + 1]
-		if type(name) == "string" and name:lower():find(want, 1, true) then
-			return "CHANNEL", id
+	profile.raidSpamChannelsMigrated = true
+	local legacy = {
+		{ "raidSpamRecruitChannel", "raidSpamRecruitInterval" },
+		{ "raidSpamRecruitChannel2", "raidSpamRecruitInterval2" },
+	}
+	for _, pair in ipairs(legacy) do
+		local key = LegacyChannelKey(profile[pair[1]])
+		if key then
+			local cfg = EnsureRowConfig(key)
+			cfg.enabled = true
+			cfg.interval = tonumber(profile[pair[2]]) or DEFAULT_INTERVAL
 		end
+		profile[pair[1]], profile[pair[2]] = nil, nil
 	end
-
-	return nil
 end
 
 -- The message box is multi-line now (so a long template is fully visible), but
@@ -163,88 +250,23 @@ local function ComputeNeedText(templateKey)
 end
 
 ----------------------------------------------------------------------------
--- Generic start/stop/ticker controller - one instance per channel.
-----------------------------------------------------------------------------
-local function CreateSpammer(buildMessageFn, getChannelInputFn, getIntervalFn, statusText, startBtn)
-	local active = false
-	local elapsed = 0
-
-	local ticker = CreateFrame("Frame")
-	ticker:Hide()
-
-	local function DoSend()
-		local msg, err = buildMessageFn()
-		if not msg then
-			statusText:SetText("|cffff4040" .. (err or "Can't send - check settings.") .. "|r")
-			return
-		end
-
-		local chatType, channelNum = ResolveChannelType(getChannelInputFn())
-		if not chatType then
-			statusText:SetText("|cffff4040Channel not found - are you joined to it?|r")
-			return
-		end
-
-		SendChatMessage(msg, chatType, nil, channelNum)
-		-- The exact outgoing text is already shown in the preview above, so the
-		-- status line just needs a timestamped confirmation on one row.
-		statusText:SetText("|cff40ff40Sent|r at " .. date("%H:%M:%S"))
-	end
-
-	ticker:SetScript("OnUpdate", function(self, e)
-		if not active then
-			return
-		end
-		elapsed = elapsed + e
-		local interval = math.max(MIN_INTERVAL, tonumber(getIntervalFn()) or MIN_INTERVAL)
-		if elapsed >= interval then
-			elapsed = 0
-			DoSend()
-		end
-	end)
-
-	local controller = {}
-
-	function controller:Start()
-		active = true
-		elapsed = 0
-		ticker:Show()
-		startBtn.text:SetText("Stop")
-		DoSend()
-	end
-
-	function controller:Stop()
-		active = false
-		ticker:Hide()
-		startBtn.text:SetText("Start")
-		statusText:SetText("Stopped.")
-	end
-
-	function controller:Toggle()
-		if active then
-			controller:Stop()
-		else
-			controller:Start()
-		end
-	end
-
-	function controller:IsActive()
-		return active
-	end
-
-	return controller
-end
-
-----------------------------------------------------------------------------
 -- Message composition - advertises the raid currently selected in Raid Comp.
 ----------------------------------------------------------------------------
--- Class Run's template is only built lazily inside RaidCompUI:ShowClassRunComp,
--- so if the saved selection points there but the Raid Comp window hasn't been
--- opened yet this session, build it here too.
+-- Raid Comp only builds/refreshes templates when its comp screen is shown
+-- (Class Run lazily, regular ones with saved counts + the Class slots
+-- setting), so if that window hasn't been opened yet this session, do it here.
 local function EnsureTemplateBuilt(RaidCompUI, raidKey, sizeKey)
 	local templateKey = raidKey .. "_" .. sizeKey
-	if not RaidCompUI.TEMPLATES[templateKey] and sizeKey == "CLASSRUN" then
-		RaidCompUI.TEMPLATES[templateKey] = RaidCompUI:BuildClassRunTemplate()
+	local template = RaidCompUI.TEMPLATES[templateKey]
+	if sizeKey == "CLASSRUN" then
+		if not template then
+			RaidCompUI.TEMPLATES[templateKey] = RaidCompUI:BuildClassRunTemplate()
+		end
+	elseif not template or not template.fromSaved
+		or template.classPins ~= (JohnnysRaidComp.db.profile.raidCompClassPins ~= false) then
+		-- Still the file-load default, or built before Class slots was toggled -
+		-- rebuild so {need} matches the comp screen.
+		RaidCompUI:RebuildTemplate(raidKey, sizeKey)
 	end
 	return templateKey
 end
@@ -573,61 +595,271 @@ local function CreateDropdown(parent, width)
 	return dd
 end
 
--- One channel block: a channel field + Say/Yell/Guild/Raid quick-fills + its
--- own interval + its own Start/Stop + a status line. Both blocks post the same
--- ComposeRecruitMessage() text - only the destination and the timer differ.
--- Returns the widgets the caller needs to wire a spammer onto.
-local function BuildChannelBlock(parent, yTop, labelText, channelKey, intervalKey, defaultInterval)
-	local channelLabel = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	channelLabel:SetPoint("TOPLEFT", 4, yTop)
-	channelLabel:SetTextColor(0.7, 0.7, 0.7)
-	channelLabel:SetText(labelText)
+----------------------------------------------------------------------------
+-- Channels list - one row per channel ([x] Name  Seconds: [90]  Ready),
+-- all run by one Start/Stop. Each ticked row posts the same
+-- ComposeRecruitMessage() text on its own interval.
+----------------------------------------------------------------------------
+local CHANNEL_ROW_H = 24
+local CHANNEL_ROWS_TOP = -272
 
-	local channelBox = Skin:CreateEditBox(parent, 200, 22)
-	channelBox:SetPoint("TOPLEFT", 90, yTop + 4)
-	channelBox.editBox:SetText(JohnnysRaidSpam.db.profile[channelKey] or "")
-	channelBox.editBox:SetScript("OnTextChanged", function(self)
-		JohnnysRaidSpam.db.profile[channelKey] = self:GetText()
+local channelsParent
+local channelRows = {}   -- current row descriptors, in display order
+local rowWidgets = {}    -- pooled row frames; rowWidgets[i] shows channelRows[i]
+local lastRowSig
+local spamStartBtn, spamStatusText, spamTicker
+local spamActive = false
+local remaining = {}     -- row key -> seconds until its next send (while running)
+local lastSentAt = {}    -- row key -> GetTime() of its last send
+local lastSendTime = 0
+
+local function UpdateRowStatus(w)
+	local row = w.row
+	local enabled = IsRowEnabled(row.key)
+	local reason = enabled and RowUnavailableReason(row)
+	if reason then
+		w.status:SetText("|cffff4040" .. reason .. "|r")
+	elseif spamActive and enabled then
+		local sentAt = lastSentAt[row.key]
+		if sentAt and GetTime() - sentAt < SENT_FLASH then
+			w.status:SetText("|cff40ff40Sent|r")
+		else
+			w.status:SetText("Next: " .. math.ceil(remaining[row.key] or 0) .. "s")
+		end
+	else
+		w.status:SetText("Ready")
+	end
+end
+
+local function UpdateAllRowStatus()
+	for i = 1, #channelRows do
+		UpdateRowStatus(rowWidgets[i])
+	end
+end
+
+local function CreateRowWidget(parent)
+	local w = CreateFrame("Frame", nil, parent)
+	w:SetHeight(CHANNEL_ROW_H)
+
+	w.check = Skin:CreateCheckbox(w, 14, false, function(checked)
+		local key = w.row.key
+		EnsureRowConfig(key).enabled = checked
+		if spamActive then
+			-- Ticked mid-run: post on the next tick rather than a full interval later.
+			remaining[key] = checked and 0 or nil
+		end
+		UpdateRowStatus(w)
+	end)
+	w.check:SetPoint("LEFT", 0, 0)
+
+	w.label = w:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	w.label:SetPoint("LEFT", 22, 0)
+	w.label:SetWidth(170)
+	w.label:SetJustifyH("LEFT")
+
+	local intervalLabel = w:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	intervalLabel:SetPoint("LEFT", 196, 0)
+	intervalLabel:SetTextColor(0.7, 0.7, 0.7)
+	intervalLabel:SetText("Seconds:")
+
+	w.interval = Skin:CreateEditBox(w, 50, 20)
+	w.interval:SetPoint("LEFT", 266, 0)
+	w.interval.editBox:SetNumeric(true)
+	w.interval.editBox:SetScript("OnTextChanged", function(self)
+		-- Programmatic SetText in RefreshChannelRows shouldn't create a saved entry.
+		if w.suppress then
+			return
+		end
+		EnsureRowConfig(w.row.key).interval = tonumber(self:GetText()) or DEFAULT_INTERVAL
+	end)
+	-- Snap anything under the floor up to MIN_INTERVAL once you're done typing,
+	-- so the box always shows the interval that will actually be used.
+	local function ClampInterval(self)
+		local value = math.max(MIN_INTERVAL, tonumber(self:GetText()) or DEFAULT_INTERVAL)
+		if tostring(value) ~= self:GetText() then
+			self:SetText(tostring(value))
+		end
+	end
+	w.interval.editBox:SetScript("OnEditFocusLost", ClampInterval)
+	w.interval.editBox:SetScript("OnEnterPressed", function(self)
+		ClampInterval(self)
+		self:ClearFocus()
 	end)
 
-	-- "Say"/"Yell"/"Guild"/"Raid" are chat types ResolveChannelType matches
-	-- case-insensitively; "Trade" is a numbered channel it resolves by name.
-	local presetX = 4
-	for _, preset in ipairs({ "Say", "Yell", "Trade", "Guild", "Raid" }) do
-		local btn = Skin:CreateButton(parent, 56, 20, preset)
-		btn:SetPoint("TOPLEFT", presetX, yTop - 24)
-		btn:SetScript("OnClick", function()
-			channelBox.editBox:SetText(preset)
-			JohnnysRaidSpam.db.profile[channelKey] = preset
-		end)
-		presetX = presetX + 60
+	w.status = w:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	w.status:SetPoint("LEFT", 326, 0)
+	w.status:SetPoint("RIGHT", 0, 0)
+	w.status:SetJustifyH("LEFT")
+	w.status:SetTextColor(0.7, 0.7, 0.7)
+
+	return w
+end
+
+-- Rebuilds the rows only when the joined-channel set changed (so a box you're
+-- typing in isn't re-laid out every poll), then refreshes every row's status.
+local function RefreshChannelRows()
+	if not channelsParent then
+		return
 	end
 
-	local intervalLabel = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	intervalLabel:SetPoint("TOPLEFT", 4, yTop - 52)
-	intervalLabel:SetTextColor(0.7, 0.7, 0.7)
-	intervalLabel:SetText("Repeat every (sec, min " .. MIN_INTERVAL .. "):")
+	local rows = GetChannelRows()
+	local sigParts = {}
+	for i, row in ipairs(rows) do
+		sigParts[i] = row.key .. "=" .. row.label
+	end
+	local sig = table.concat(sigParts, "\001")
 
-	local intervalBox = Skin:CreateEditBox(parent, 70, 22)
-	intervalBox:SetPoint("TOPLEFT", 230, yTop - 48)
-	intervalBox.editBox:SetNumeric(true)
-	intervalBox.editBox:SetText(tostring(JohnnysRaidSpam.db.profile[intervalKey] or defaultInterval))
-	intervalBox.editBox:SetScript("OnTextChanged", function(self)
-		JohnnysRaidSpam.db.profile[intervalKey] = tonumber(self:GetText()) or MIN_INTERVAL
+	if sig ~= lastRowSig then
+		lastRowSig = sig
+		channelRows = rows
+		for i, row in ipairs(rows) do
+			local w = rowWidgets[i]
+			if not w then
+				w = CreateRowWidget(channelsParent)
+				rowWidgets[i] = w
+			end
+			local y = CHANNEL_ROWS_TOP - (i - 1) * CHANNEL_ROW_H
+			w:ClearAllPoints()
+			w:SetPoint("TOPLEFT", channelsParent, "TOPLEFT", 4, y)
+			w:SetPoint("TOPRIGHT", channelsParent, "TOPRIGHT", -4, y)
+			w.row = row
+			w.label:SetText(row.label)
+			-- Dim a channel you're not in (only Trade is ever listed that way).
+			local shade = (row.channel and not FindChannelNum(row.key)) and 0.6 or 1
+			w.label:SetTextColor(shade, shade, shade)
+			local cfg = GetRowConfig(row.key)
+			w.check:SetChecked(cfg and cfg.enabled)
+			w.suppress = true
+			w.interval.editBox:SetText(tostring(GetRowInterval(row.key)))
+			w.suppress = false
+			w:Show()
+		end
+		for i = #rows + 1, #rowWidgets do
+			rowWidgets[i]:Hide()
+		end
+
+		spamStartBtn:ClearAllPoints()
+		spamStartBtn:SetPoint("TOPLEFT", channelsParent, "TOPLEFT", 4, CHANNEL_ROWS_TOP - #rows * CHANNEL_ROW_H - 8)
+		mainFrame:SetHeight(BASE_HEIGHT + #rows * CHANNEL_ROW_H)
+	end
+
+	UpdateAllRowStatus()
+end
+
+local function SendToRow(row, msg)
+	if row.channel then
+		local num = FindChannelNum(row.key)
+		if not num then
+			return false
+		end
+		SendChatMessage(msg, "CHANNEL", nil, num)
+	else
+		if RowUnavailableReason(row) then
+			return false
+		end
+		SendChatMessage(msg, row.chatType)
+	end
+	return true
+end
+
+-- Counts every ticked row down and posts the ones that are due, at most one
+-- send per SEND_SPACING so a batch of due rows goes out staggered.
+local function SpamTick(dt)
+	local now = GetTime()
+	for _, row in ipairs(channelRows) do
+		local key = row.key
+		if IsRowEnabled(key) then
+			local rem = (remaining[key] or 0) - dt
+			if rem <= 0 and now - lastSendTime >= SEND_SPACING then
+				local msg, err = ComposeRecruitMessage()
+				if not msg then
+					spamStatusText:SetText("|cffff4040" .. (err or "Can't send - check settings.") .. "|r")
+					rem = RETRY_DELAY
+				elseif SendToRow(row, msg) then
+					lastSendTime = now
+					lastSentAt[key] = now
+					rem = GetRowInterval(key)
+					spamStatusText:SetText("|cff40ff40Sent|r to " .. row.label .. " at " .. date("%H:%M:%S"))
+				else
+					rem = RETRY_DELAY
+				end
+			end
+			remaining[key] = math.max(rem, 0)
+		else
+			remaining[key] = nil
+		end
+	end
+	UpdateAllRowStatus()
+end
+
+local function StopSpam()
+	spamActive = false
+	spamTicker:Hide()
+	wipe(remaining)
+	spamStartBtn.text:SetText("Start")
+	spamStatusText:SetText("Stopped.")
+	UpdateAllRowStatus()
+end
+
+local function StartSpam()
+	local any = false
+	for _, row in ipairs(channelRows) do
+		if IsRowEnabled(row.key) then
+			any = true
+			break
+		end
+	end
+	if not any then
+		spamStatusText:SetText("|cffff4040Tick at least one channel first.|r")
+		return
+	end
+
+	wipe(remaining)
+	spamActive = true
+	spamTicker:Show()
+	spamStartBtn.text:SetText("Stop")
+	spamStatusText:SetText("Running...")
+	SpamTick(0)
+end
+
+local function BuildChannelsSection(parent)
+	channelsParent = parent
+
+	local header = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	header:SetPoint("TOP", 0, -246)
+	header:SetText("Channels")
+
+	spamStartBtn = Skin:CreateButton(parent, 120, 24, "Start")
+	spamStartBtn:SetScript("OnClick", function()
+		if spamActive then
+			StopSpam()
+		else
+			StartSpam()
+		end
 	end)
 
-	local startBtn = Skin:CreateButton(parent, 120, 24, "Start")
-	startBtn:SetPoint("TOPLEFT", 4, yTop - 80)
+	spamStatusText = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	spamStatusText:SetPoint("LEFT", spamStartBtn, "RIGHT", 10, 0)
+	spamStatusText:SetPoint("RIGHT", parent, "RIGHT", -4, 0)
+	spamStatusText:SetJustifyH("LEFT")
+	spamStatusText:SetTextColor(0.7, 0.7, 0.7)
+	spamStatusText:SetText("Stopped.")
 
-	local statusText = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	statusText:SetPoint("TOPLEFT", 4, yTop - 108)
-	statusText:SetPoint("RIGHT", parent, "RIGHT", -4, 0)
-	statusText:SetJustifyH("LEFT")
-	statusText:SetJustifyV("TOP")
-	statusText:SetTextColor(0.7, 0.7, 0.7)
-	statusText:SetText("Stopped.")
+	-- Stepped at 0.25s rather than every frame - plenty for second countdowns.
+	spamTicker = CreateFrame("Frame")
+	spamTicker:Hide()
+	local acc = 0
+	spamTicker:SetScript("OnUpdate", function(self, e)
+		acc = acc + e
+		if acc >= 0.25 then
+			local dt = acc
+			acc = 0
+			SpamTick(dt)
+		end
+	end)
 
-	return channelBox, intervalBox, startBtn, statusText
+	MigrateLegacyChannels()
+	RefreshChannelRows()
 end
 
 local function BuildRecruitPanel(parent)
@@ -681,36 +913,12 @@ local function BuildRecruitPanel(parent)
 
 	AddDivider(parent, -236)
 
-	recruitChannelBox, recruitIntervalBox, recruitStartBtn, recruitStatusText =
-		BuildChannelBlock(parent, -250, "Channel 1:", "raidSpamRecruitChannel", "raidSpamRecruitInterval", 90)
-
-	AddDivider(parent, -376)
-
-	recruitChannel2Box, recruitInterval2Box, recruitStart2Btn, recruitStatus2Text =
-		BuildChannelBlock(parent, -390, "Channel 2:", "raidSpamRecruitChannel2", "raidSpamRecruitInterval2", 120)
-
-	recruitSpammer = CreateSpammer(
-		ComposeRecruitMessage,
-		function() return recruitChannelBox.editBox:GetText() end,
-		function() return recruitIntervalBox.editBox:GetText() end,
-		recruitStatusText,
-		recruitStartBtn
-	)
-	recruitStartBtn:SetScript("OnClick", function() recruitSpammer:Toggle() end)
-
-	recruitSpammer2 = CreateSpammer(
-		ComposeRecruitMessage,
-		function() return recruitChannel2Box.editBox:GetText() end,
-		function() return recruitInterval2Box.editBox:GetText() end,
-		recruitStatus2Text,
-		recruitStart2Btn
-	)
-	recruitStart2Btn:SetScript("OnClick", function() recruitSpammer2:Toggle() end)
+	BuildChannelsSection(parent)
 end
 
 local function BuildFrame()
 	mainFrame = CreateFrame("Frame", "JohnnysAddonHubRaidSpamFrame", UIParent)
-	mainFrame:SetSize(FRAME_WIDTH, FRAME_HEIGHT)
+	mainFrame:SetSize(FRAME_WIDTH, BASE_HEIGHT)
 
 	local pos = JohnnysRaidSpam.db.profile.raidSpamPanelPosition
 	mainFrame:SetPoint(pos.point, UIParent, pos.relativePoint, pos.x, pos.y)
@@ -799,6 +1007,7 @@ local function BuildFrame()
 			previewElapsed = 0
 			RefreshQuestLogEntries()
 			RefreshRecruitPreview()
+			RefreshChannelRows()
 		end
 	end)
 
@@ -807,17 +1016,23 @@ local function BuildFrame()
 		ApplyDock()
 		RefreshQuestLogEntries()
 		RefreshRecruitPreview()
+		RefreshChannelRows()
 		previewTicker:Show()
 	end)
 	mainFrame:SetScript("OnHide", function()
 		previewTicker:Hide()
 		questDropdown:Close()
 		-- Don't leave chat spam running unattended once the window's closed.
-		if recruitSpammer and recruitSpammer:IsActive() then
-			recruitSpammer:Stop()
+		if spamActive then
+			StopSpam()
 		end
-		if recruitSpammer2 and recruitSpammer2:IsActive() then
-			recruitSpammer2:Stop()
+	end)
+
+	-- Pick up /join and /leave right away instead of on the next 3s poll.
+	mainFrame:RegisterEvent("CHANNEL_UI_UPDATE")
+	mainFrame:SetScript("OnEvent", function()
+		if mainFrame:IsShown() then
+			RefreshChannelRows()
 		end
 	end)
 end
