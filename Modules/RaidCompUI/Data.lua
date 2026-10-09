@@ -19,7 +19,19 @@ RaidCompUI.SIZE_LABELS = {
 	["CLASSRUN"] = "Class Run",
 }
 
-RaidCompUI.RAID_ORDER = { "ONY", "VOA", "EOE", "OS", "NAXX", "ULD", "TOC", "ICC", "RS" }
+-- The raid rail's collapsible groups (see UI.lua's BuildRail). RAID_ORDER is
+-- every raid of every group, in rail order.
+RaidCompUI.RAID_GROUPS = {
+	{ key = "WOTLK", label = "WotLK raids", raids = { "ONY", "VOA", "EOE", "OS", "NAXX", "ULD", "TOC", "ICC", "RS" } },
+	{ key = "TBC", label = "TBC raids", raids = { "KARA", "ZA", "GRUUL", "MAG", "SSC", "TK", "HYJAL", "BT", "SWP" } },
+}
+
+RaidCompUI.RAID_ORDER = {}
+for _, group in ipairs(RaidCompUI.RAID_GROUPS) do
+	for _, raidKey in ipairs(group.raids) do
+		table.insert(RaidCompUI.RAID_ORDER, raidKey)
+	end
+end
 
 RaidCompUI.RAID_LABELS = {
 	ONY = "Onyxia's Lair",
@@ -31,6 +43,15 @@ RaidCompUI.RAID_LABELS = {
 	TOC = "Trial of the Crusader",
 	ICC = "Icecrown Citadel",
 	RS = "The Ruby Sanctum",
+	KARA = "Karazhan",
+	ZA = "Zul'Aman",
+	GRUUL = "Gruul's Lair",
+	MAG = "Magtheridon's Lair",
+	SSC = "Serpentshrine Cavern",
+	TK = "Tempest Keep",
+	HYJAL = "Hyjal Summit",
+	BT = "Black Temple",
+	SWP = "Sunwell Plateau",
 }
 
 -- Only ToC/ICC/Ruby Sanctum shipped with a Heroic difficulty toggle - the
@@ -45,6 +66,17 @@ RaidCompUI.RAID_SIZE_ORDER = {
 	TOC = { "10", "10H", "25", "25H" },
 	ICC = { "10", "10H", "25", "25H" },
 	RS = { "10", "10H", "25", "25H" },
+	-- The Burning Crusade's raids each have one fixed size and no class
+	-- picks of their own - every slot starts as "Any" until you set one.
+	KARA = { "10" },
+	ZA = { "10" },
+	GRUUL = { "25" },
+	MAG = { "25" },
+	SSC = { "25" },
+	TK = { "25" },
+	HYJAL = { "25" },
+	BT = { "25" },
+	SWP = { "25" },
 }
 
 -- Headcount per role is fixed by the raid's size lockout by default, not by
@@ -125,6 +157,16 @@ RaidCompUI.CLASS_RUN_HEALER_CAPABLE = {
 	PALADIN = true,
 	SHAMAN = true,
 	DRUID = true,
+}
+
+-- Which classes a slot of each role can be pinned to (see UI.lua's slot menu).
+RaidCompUI.ROLE_CLASSES = {
+	TANK = RaidCompUI.CLASS_RUN_TANK_CAPABLE,
+	HEALER = RaidCompUI.CLASS_RUN_HEALER_CAPABLE,
+	DAMAGER = {
+		WARRIOR = true, PALADIN = true, HUNTER = true, ROGUE = true, PRIEST = true,
+		DEATHKNIGHT = true, SHAMAN = true, MAGE = true, WARLOCK = true, DRUID = true,
+	},
 }
 
 -- Per-raid priority lists: the classes most worth having for that specific
@@ -236,51 +278,109 @@ function RaidCompUI:GetDefaultCounts(raidKey, sizeKey)
 	return { TANK = tankCount, HEALER = healerCount, DAMAGER = counts.DAMAGER + extraDps }
 end
 
--- Builds a raid+size's slot list from an explicit tank/healer/dps count
--- (either RaidCompUI:GetDefaultCounts's result, or a user-adjusted one from
--- UI.lua's AdjustCount) - the raid's own class-priority profile still decides
--- which of those slots get pinned to a specific class, same as before.
-function RaidCompUI:BuildTemplate(raidKey, sizeKey, counts)
+-- The raid's built-in class slots per role, before any hand edits: the
+-- profile's DPS priority list (all of it on 25s, the first two on 10s - a
+-- 5-DPS raid can't afford to lock down more) plus one healer on 25s.
+function RaidCompUI:GetDefaultClassSlots(raidKey, sizeKey)
 	local profile = RAID_PROFILES[raidKey] or {}
-	-- Class slots switched off (raidCompClassPins) - build from an empty
-	-- profile so every slot is generic. SavedVariables aren't loaded yet when
-	-- this runs at file load, so those default templates always have pins;
-	-- RaidCompUI:RebuildTemplate applies the setting before anything's shown.
-	local db = JohnnysRaidComp.db
-	local classPins = not (db and db.profile.raidCompClassPins == false)
-	if not classPins then
-		profile = {}
-	end
 	local isLarge = (sizeKey == "25" or sizeKey == "25H")
-	local slots = {}
-
-	local tankCount = counts.TANK
-	for i = 1, tankCount do
-		table.insert(slots, { role = "TANK", label = "Any Tank" })
+	local pins = { TANK = {}, HEALER = {}, DAMAGER = {} }
+	if profile.healer and isLarge then
+		table.insert(pins.HEALER, profile.healer.class)
 	end
-
-	-- A pinned healer is only worth locking down on 25s - a light 10-man
-	-- healer count can't spare the flexibility.
-	local healerSlotsLeft = counts.HEALER
-	if profile.healer and isLarge and healerSlotsLeft > 0 then
-		table.insert(slots, { role = "HEALER", class = profile.healer.class, label = RaidCompUI.CLASS_LABELS[profile.healer.class] })
-		healerSlotsLeft = healerSlotsLeft - 1
-	end
-	for i = 1, healerSlotsLeft do
-		table.insert(slots, { role = "HEALER", label = "Any Healer" })
-	end
-
 	local dpsProfile = profile.dps or {}
 	local pinCount = isLarge and #dpsProfile or math.min(2, #dpsProfile)
-	pinCount = math.min(pinCount, counts.DAMAGER)
-	local dpsSlotsLeft = counts.DAMAGER
 	for i = 1, pinCount do
-		local class = dpsProfile[i].class
-		table.insert(slots, { role = "DAMAGER", class = class, label = RaidCompUI.CLASS_LABELS[class] })
-		dpsSlotsLeft = dpsSlotsLeft - 1
+		table.insert(pins.DAMAGER, dpsProfile[i].class)
 	end
-	for i = 1, dpsSlotsLeft do
-		table.insert(slots, { role = "DAMAGER", label = "Any DPS" })
+	return pins
+end
+
+-- The class slots actually in force for a raid+size: the hand-edited set if
+-- there is one (profile.raidCompClassSlots, see UI.lua's slot menu), else the
+-- built-in picks above.
+function RaidCompUI:GetClassSlots(raidKey, sizeKey)
+	local db = JohnnysRaidComp.db
+	local saved = db and db.profile.raidCompClassSlots and db.profile.raidCompClassSlots[raidKey .. "_" .. sizeKey]
+	if saved then
+		return saved
+	end
+	return self:GetDefaultClassSlots(raidKey, sizeKey)
+end
+
+-- What a class slot is called when it sits in the Tanks or Healers section -
+-- shown on the slot card and sent in the Raid Spammer's {need} text, so a
+-- Shaman moved to Healers is advertised as "Resto Shaman", not just "Shaman".
+-- DPS class slots keep the plain class name.
+RaidCompUI.ROLE_CLASS_LABELS = {
+	TANK = {
+		WARRIOR = "Prot Warrior",
+		PALADIN = "Prot Pala",
+		DRUID = "Bear Druid",
+		DEATHKNIGHT = "Tank DK",
+	},
+	HEALER = {
+		SHAMAN = "Resto Shaman",
+		DRUID = "Resto Druid",
+		PALADIN = "Holy Pala",
+		PRIEST = "Heal Priest",
+	},
+}
+
+-- The name to show/advertise for a slot. Regular slots already carry it in
+-- slot.label; a Class Run slot has no role of its own, so its name follows
+-- the hand-set tank/healer markers (raidCompClassRunTank/Healers) - the
+-- Shaman slot ticked as healer reads "Resto Shaman".
+function RaidCompUI:SlotLabel(templateKey, slot)
+	local db = JohnnysRaidComp.db
+	if slot.role or not slot.class or not db or not templateKey then
+		return slot.label
+	end
+	local profile = db.profile
+	if profile.raidCompClassRunTank[templateKey] == slot.class then
+		return RaidCompUI.ROLE_CLASS_LABELS.TANK[slot.class] or slot.label
+	end
+	local healers = profile.raidCompClassRunHealers[templateKey]
+	if healers and healers[slot.class] then
+		return RaidCompUI.ROLE_CLASS_LABELS.HEALER[slot.class] or slot.label
+	end
+	return slot.label
+end
+
+local ROLE_BUILD = {
+	{ role = "TANK", any = "Any Tank" },
+	{ role = "HEALER", any = "Any Healer" },
+	{ role = "DAMAGER", any = "Any DPS" },
+}
+
+-- Builds a raid+size's slot list from an explicit tank/healer/dps count
+-- (either RaidCompUI:GetDefaultCounts's result, or a user-adjusted one from
+-- UI.lua's AdjustCount). Within each role the class slots come first
+-- (slot.pinIndex = its position in that role's class-slot list), then plain
+-- "Any" slots up to the count. Slots only ever display the class name.
+function RaidCompUI:BuildTemplate(raidKey, sizeKey, counts)
+	-- Class slots switched off (raidCompClassPins) - every slot is generic.
+	-- SavedVariables aren't loaded yet when this runs at file load, so those
+	-- default templates always have the built-in pins;
+	-- RaidCompUI:RebuildTemplate applies the settings before anything's shown.
+	local db = JohnnysRaidComp.db
+	local classPins = not (db and db.profile.raidCompClassPins == false)
+	local pins = classPins and self:GetClassSlots(raidKey, sizeKey) or {}
+	local slots = {}
+
+	for _, build in ipairs(ROLE_BUILD) do
+		local list = pins[build.role] or {}
+		local total = counts[build.role] or 0
+		local pinned = math.min(#list, total)
+		for i = 1, pinned do
+			local class = list[i]
+			local roleLabels = RaidCompUI.ROLE_CLASS_LABELS[build.role]
+			local label = (roleLabels and roleLabels[class]) or RaidCompUI.CLASS_LABELS[class] or class
+			table.insert(slots, { role = build.role, class = class, label = label, pinIndex = i })
+		end
+		for i = pinned + 1, total do
+			table.insert(slots, { role = build.role, label = build.any })
+		end
 	end
 
 	-- classPins records which setting this was built under, so a stale

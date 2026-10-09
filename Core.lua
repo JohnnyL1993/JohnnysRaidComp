@@ -11,6 +11,12 @@ local defaults = {
 		-- slot is a plain "Any DPS"/"Any Healer". Toggled from the comp
 		-- screen's "Class slots" button, applies to every raid+size.
 		raidCompClassPins = true,
+		-- Hand-edited class slots per raid+size, set from a slot card's menu:
+		-- [templateKey] = { TANK = {class, ...}, HEALER = {...}, DAMAGER = {...} }.
+		-- Absent = the raid's built-in picks (see Data.lua's GetDefaultClassSlots).
+		raidCompClassSlots = {},
+		-- Which groups of the raid rail are folded shut.
+		raidCompRailCollapsed = { TBC = true },
 		raidCompClassRunTank = {},
 		raidCompClassRunHealers = {},
 		-- Standalone launcher (see Modules\Launcher.lua) - only used when

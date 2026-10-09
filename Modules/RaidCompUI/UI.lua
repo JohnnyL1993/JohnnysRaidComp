@@ -63,6 +63,9 @@ local benchLabel
 -- BuildCompPage / RaidCompUI:AnnounceUninspected).
 local reportVHStatus
 local currentRaid, currentSize
+-- Height the raid rail needs for its open groups (see LayoutRail) - the
+-- window never shrinks below it.
+local railNeededHeight = 0
 
 -- matches from the last RefreshComp, so a click can read "who's in slot X
 -- right now" without recomputing; and the current selection awaiting a
@@ -286,6 +289,8 @@ local FormatNameWithClass, OnToggleTank, OnToggleHealer
 local FormatGearScoreText, FormatCompactGearScoreText, ShowGearScoreTooltip
 -- Defined in the achievement lookup section at the bottom of this file.
 local AddAchievementLines, AchClearPending
+-- Defined with the class-slot editing further down.
+local ShowSlotMenu
 
 -- Colors a matched member's whole name by class (e.g. "|cff...Bob|r") - used
 -- by both SetCardState and SetBenchChipState so slot cards and bench chips
@@ -378,6 +383,11 @@ function OnToggleTank(slot, checked)
 	local all = JohnnysRaidComp.db.profile.raidCompClassRunTank
 	if checked then
 		all[templateKey] = slot.class
+		-- One role per class: ticking tank unticks that class's healer mark.
+		local healers = JohnnysRaidComp.db.profile.raidCompClassRunHealers[templateKey]
+		if healers then
+			healers[slot.class] = nil
+		end
 	elseif all[templateKey] == slot.class then
 		all[templateKey] = nil
 	end
@@ -399,6 +409,10 @@ function OnToggleHealer(slot, checked)
 			all[templateKey] = set
 		end
 		set[slot.class] = true
+		local tanks = JohnnysRaidComp.db.profile.raidCompClassRunTank
+		if tanks[templateKey] == slot.class then
+			tanks[templateKey] = nil
+		end
 	elseif set then
 		set[slot.class] = nil
 	end
@@ -421,6 +435,269 @@ function CurrentTemplateKey()
 	end
 	return currentRaid .. "_" .. currentSize
 end
+
+----------------------------------------------------------------------------
+-- Ready check - the footer's "Ready check" button starts a normal ready
+-- check; this tracks the answers (also for checks someone else starts) and
+-- flags each member on their slot card: ready, not ready, or AFK (never
+-- answered before it timed out). Results stay up until the next check, or
+-- until the button is right-clicked. Session-only.
+----------------------------------------------------------------------------
+-- [name] = "ready" | "notready" | "waiting" | "afk" | "offline"
+local readyState = {}
+local readyActive = false
+local readyStartedAt = 0
+local readyHasResult = false
+local readyBtn
+
+local READY_ICONS = {
+	ready = "Interface\\RaidFrame\\ReadyCheck-Ready",
+	notready = "Interface\\RaidFrame\\ReadyCheck-NotReady",
+	waiting = "Interface\\RaidFrame\\ReadyCheck-Waiting",
+	afk = "Interface\\RaidFrame\\ReadyCheck-NotReady",
+	offline = "Interface\\RaidFrame\\ReadyCheck-NotReady",
+}
+local READY_WORDS = { notready = "NOT READY", afk = "AFK", offline = "OFFLINE" }
+
+-- Reads everyone's current answer from the client while a check is running.
+local function ReadyPoll()
+	for _, member in ipairs(RaidCompUI:ScanRoster()) do
+		local status = GetReadyCheckStatus(member.unit)
+		if status == "ready" or status == "notready" or status == "waiting" then
+			if readyState[member.name] ~= "offline" then
+				readyState[member.name] = status
+			end
+		end
+	end
+end
+
+local function ReadyRefresh()
+	if RaidCompUI:IsShowingComp() then
+		RaidCompUI:RefreshComp()
+	end
+end
+
+local function ReadyFinish()
+	if not readyActive then
+		return
+	end
+	pcall(ReadyPoll)
+	readyActive = false
+	-- Anyone who never answered is the AFK list.
+	for name, status in pairs(readyState) do
+		if status == "waiting" then
+			readyState[name] = "afk"
+		end
+	end
+	ReadyRefresh()
+end
+
+local function ReadyStart(starter)
+	for name in pairs(readyState) do
+		readyState[name] = nil
+	end
+	for _, member in ipairs(RaidCompUI:ScanRoster()) do
+		if UnitIsConnected(member.unit) then
+			readyState[member.name] = "waiting"
+		else
+			readyState[member.name] = "offline"
+		end
+	end
+	-- Whoever starts a check counts as ready.
+	if starter and readyState[starter] then
+		readyState[starter] = "ready"
+	end
+	readyActive = true
+	readyHasResult = true
+	readyStartedAt = GetTime()
+	ReadyRefresh()
+end
+
+local function ReadyClear()
+	if readyActive then
+		return
+	end
+	for name in pairs(readyState) do
+		readyState[name] = nil
+	end
+	readyHasResult = false
+	ReadyRefresh()
+end
+
+-- "Ready check: 8 ready, 1 not ready - AFK: Bob, Jim", or nil with no result.
+local function ReadySummary(roster)
+	if not readyHasResult then
+		return nil
+	end
+	local ready, total = 0, 0
+	local lists = { notready = {}, afk = {}, offline = {}, waiting = {} }
+	for _, member in ipairs(roster) do
+		local status = readyState[member.name]
+		if status then
+			total = total + 1
+			if status == "ready" then
+				ready = ready + 1
+			elseif lists[status] then
+				table.insert(lists[status], member.name)
+			end
+		end
+	end
+	if total == 0 then
+		return nil
+	end
+	local text
+	if readyActive then
+		text = string.format("Ready check running: %d/%d ready", ready, total)
+		if #lists.waiting > 0 then
+			text = text .. " - waiting on " .. table.concat(lists.waiting, ", ")
+		end
+	else
+		text = string.format("Ready check: %d/%d ready", ready, total)
+		if #lists.afk > 0 then
+			text = text .. " - AFK: " .. table.concat(lists.afk, ", ")
+		end
+	end
+	if #lists.notready > 0 then
+		text = text .. " - not ready: " .. table.concat(lists.notready, ", ")
+	end
+	if #lists.offline > 0 then
+		text = text .. " - offline: " .. table.concat(lists.offline, ", ")
+	end
+	local allGood = (not readyActive) and ready == total
+	return text, allGood
+end
+
+-- Footer button: left-click starts a check, right-click clears the flags.
+local function OnReadyButton(mouseButton)
+	if mouseButton == "RightButton" then
+		ReadyClear()
+		return
+	end
+	if readyActive then
+		return
+	end
+	local inRaid = GetNumRaidMembers() > 0
+	if not inRaid and GetNumPartyMembers() == 0 then
+		DEFAULT_CHAT_FRAME:AddMessage("|cffb9e24aRaid Comp:|r you're not in a group, so there's nobody to ready check.")
+		return
+	end
+	local allowed
+	if inRaid then
+		allowed = IsRaidLeader() or IsRaidOfficer()
+	else
+		allowed = IsPartyLeader()
+	end
+	if not allowed then
+		DEFAULT_CHAT_FRAME:AddMessage("|cffb9e24aRaid Comp:|r only the leader or an assistant can start a ready check.")
+		return
+	end
+	DoReadyCheck()
+end
+
+----------------------------------------------------------------------------
+-- Quick kick - Alt+click a slot card or bench chip to remove that player, or
+-- the footer's "Kick AFK (n)" button (shown after a ready check that left
+-- people unanswered) to remove all of them. Always behind a confirm popup.
+----------------------------------------------------------------------------
+local kickBtn
+
+local function CanKick()
+	if GetNumRaidMembers() > 0 then
+		return IsRaidLeader() or IsRaidOfficer()
+	end
+	return GetNumPartyMembers() > 0 and IsPartyLeader()
+end
+
+-- Roster members the last ready check left flagged AFK (never yourself).
+local function ReadyAfkNames(roster)
+	local names = {}
+	if readyActive then
+		return names
+	end
+	local me = UnitName("player")
+	for _, member in ipairs(roster) do
+		if readyState[member.name] == "afk" and member.name ~= me then
+			table.insert(names, member.name)
+		end
+	end
+	return names
+end
+
+StaticPopupDialogs["JOHNNYS_RAIDCOMP_KICK"] = {
+	text = "Remove from the group?\n\n%s",
+	button1 = "Remove",
+	button2 = "Cancel",
+	OnAccept = function(self, names)
+		for _, name in ipairs(names or {}) do
+			UninviteUnit(name)
+			readyState[name] = nil
+			gsChanged[name] = nil
+		end
+	end,
+	timeout = 0,
+	whileDead = 1,
+	hideOnEscape = 1,
+	showAlert = 1,
+}
+
+local function ConfirmKick(names)
+	if not names or #names == 0 then
+		return
+	end
+	if not CanKick() then
+		DEFAULT_CHAT_FRAME:AddMessage("|cffb9e24aRaid Comp:|r only the leader or an assistant can remove players.")
+		return
+	end
+	local me = UnitName("player")
+	local list = {}
+	for _, name in ipairs(names) do
+		if name ~= me then
+			table.insert(list, name)
+		end
+	end
+	if #list == 0 then
+		return
+	end
+	local dialog = StaticPopup_Show("JOHNNYS_RAIDCOMP_KICK", table.concat(list, ", "))
+	if dialog then
+		dialog.data = list
+	end
+end
+
+local readyWatcher = CreateFrame("Frame")
+readyWatcher:RegisterEvent("READY_CHECK")
+readyWatcher:RegisterEvent("READY_CHECK_CONFIRM")
+readyWatcher:RegisterEvent("READY_CHECK_FINISHED")
+readyWatcher:SetScript("OnEvent", function(self, event, arg1)
+	if event == "READY_CHECK" then
+		pcall(ReadyStart, arg1)
+	elseif event == "READY_CHECK_CONFIRM" then
+		if readyActive then
+			pcall(ReadyPoll)
+			ReadyRefresh()
+		end
+	else
+		ReadyFinish()
+	end
+end)
+local readyElapsed = 0
+readyWatcher:SetScript("OnUpdate", function(self, elapsed)
+	if not readyActive then
+		return
+	end
+	readyElapsed = readyElapsed + elapsed
+	if readyElapsed < 0.5 then
+		return
+	end
+	readyElapsed = 0
+	pcall(ReadyPoll)
+	-- A ready check lasts 30s; close it ourselves if the finish event is missed.
+	if GetTime() - readyStartedAt > 40 then
+		ReadyFinish()
+	else
+		ReadyRefresh()
+	end
+end)
 
 local function ClearSelection()
 	selection = nil
@@ -484,6 +761,13 @@ function OnCardClick(index, mouseButton)
 	-- GearScore - see RaidCompUI:ForceRescanGearScore. Returns early so it
 	-- never also triggers a swap or clears an override.
 	local matchedName = slotCards[index] and slotCards[index].matchedName
+	-- Alt+click: remove this player from the group (asks first).
+	if IsAltKeyDown() then
+		if matchedName then
+			ConfirmKick({ matchedName })
+		end
+		return
+	end
 	if IsControlKeyDown() then
 		if matchedName then
 			RaidCompUI:ForceRescanGearScore(matchedName)
@@ -509,6 +793,11 @@ function OnCardClick(index, mouseButton)
 end
 
 function OnBenchClick(name)
+	-- Alt+click: remove this player from the group (asks first).
+	if IsAltKeyDown() then
+		ConfirmKick({ name })
+		return
+	end
 	-- Ctrl+click force-re-scans this member's GearScore instead of
 	-- selecting/placing them (see OnCardClick / RaidCompUI:ForceRescanGearScore).
 	if IsControlKeyDown() then
@@ -531,6 +820,7 @@ function EnsureSlotCard(index)
 	end
 
 	card = CreateFrame("Frame", nil, compPage)
+	card.index = index
 	card:SetSize(CARD_WIDTH, CARD_HEIGHT)
 	card:SetBackdrop({ bgFile = Skin.WHITE, edgeFile = Skin.WHITE, edgeSize = 1 })
 
@@ -570,6 +860,16 @@ function EnsureSlotCard(index)
 	card.pvpBadge:SetTextColor(0.85, 0.3, 0.85)
 	card.pvpBadge:Hide()
 
+	-- Ready-check flag (see the ready check section): icon bottom-left, plus
+	-- a word beside it for anything that isn't a plain "ready".
+	card.readyIcon = card:CreateTexture(nil, "OVERLAY")
+	card.readyIcon:SetSize(14, 14)
+	card.readyIcon:SetPoint("BOTTOMLEFT", 3, 3)
+	card.readyIcon:Hide()
+	card.readyWord = Skin:Heading(card, 10, Skin.C.short)
+	card.readyWord:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 3, 19)
+	card.readyWord:Hide()
+
 	card:EnableMouse(true)
 	card:SetScript("OnMouseUp", function(self, mouseButton)
 		OnCardClick(index, mouseButton)
@@ -599,7 +899,7 @@ function EnsureSlotCard(index)
 	card.tankToggle:SetBackdropBorderColor(0.85, 0.65, 0.2, 1)
 	card.tankToggle:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_TOP")
-		GameTooltip:SetText("Mark as Tank")
+		GameTooltip:SetText("Tank: advertise this class as its tank spec")
 		GameTooltip:Show()
 	end)
 	card.tankToggle:SetScript("OnLeave", GameTooltip_Hide)
@@ -612,11 +912,35 @@ function EnsureSlotCard(index)
 	card.healerToggle:SetBackdropBorderColor(0.3, 0.6, 0.9, 1)
 	card.healerToggle:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_TOP")
-		GameTooltip:SetText("Mark as Healer")
+		GameTooltip:SetText("Healer: advertise this class as its healing spec")
 		GameTooltip:Show()
 	end)
 	card.healerToggle:SetScript("OnLeave", GameTooltip_Hide)
 	card.healerToggle:Hide()
+
+	-- Corner arrow: opens the slot's menu to pin it to a class, or move a
+	-- class slot to another role (see ShowSlotMenu). Not shown on a Class Run
+	-- or with Class slots switched off (see SetCardState).
+	card.menuBtn = CreateFrame("Button", nil, card)
+	card.menuBtn:SetSize(16, 16)
+	card.menuBtn:SetPoint("TOPRIGHT", card, "TOPRIGHT", -2, -2)
+	card.menuBtn.arrow = card.menuBtn:CreateTexture(nil, "OVERLAY")
+	card.menuBtn.arrow:SetSize(9, 8)
+	card.menuBtn.arrow:SetPoint("CENTER")
+	card.menuBtn.arrow:SetTexture("Interface\\Buttons\\UI-SortArrow")
+	card.menuBtn.arrow:SetVertexColor(Skin.C.muted[1], Skin.C.muted[2], Skin.C.muted[3])
+	card.menuBtn:SetScript("OnClick", function() ShowSlotMenu(card) end)
+	card.menuBtn:SetScript("OnEnter", function(self)
+		self.arrow:SetVertexColor(Skin.C.accent[1], Skin.C.accent[2], Skin.C.accent[3])
+		GameTooltip:SetOwner(self, "ANCHOR_TOP")
+		GameTooltip:SetText("Choose this slot's class or role")
+		GameTooltip:Show()
+	end)
+	card.menuBtn:SetScript("OnLeave", function(self)
+		self.arrow:SetVertexColor(Skin.C.muted[1], Skin.C.muted[2], Skin.C.muted[3])
+		GameTooltip:Hide()
+	end)
+	card.menuBtn:Hide()
 
 	slotCards[index] = card
 	return card
@@ -625,7 +949,7 @@ end
 function SetCardState(card, slot, matchedName, matchedClass, isClassRun)
 	card.slot = slot
 	card.matchedName = matchedName
-	card.label:SetText(string.upper(slot.label))
+	card.label:SetText(string.upper(RaidCompUI:SlotLabel(CurrentTemplateKey(), slot)))
 
 	if matchedName then
 		card:SetBackdropColor(0.090, 0.114, 0.125, 0.95)
@@ -671,11 +995,48 @@ function SetCardState(card, slot, matchedName, matchedClass, isClassRun)
 		card.blacklistEntry = nil
 	end
 
+	local readyStatus = matchedName and readyState[matchedName]
+	if readyStatus and READY_ICONS[readyStatus] then
+		card.readyIcon:SetTexture(READY_ICONS[readyStatus])
+		card.readyIcon:Show()
+		local word = READY_WORDS[readyStatus]
+		if word then
+			card.readyWord:SetText(word)
+			if readyStatus == "afk" then
+				card.readyWord:SetTextColor(1, 0.85, 0.40)
+				card:SetBackdropBorderColor(1, 0.85, 0.40, 1)
+			else
+				card.readyWord:SetTextColor(Skin.C.short[1], Skin.C.short[2], Skin.C.short[3])
+				card:SetBackdropBorderColor(Skin.C.short[1], Skin.C.short[2], Skin.C.short[3], 1)
+			end
+			card.readyWord:Show()
+		else
+			card.readyWord:Hide()
+		end
+	else
+		card.readyIcon:Hide()
+		card.readyWord:Hide()
+	end
+
+	-- A class slot's label wears its class colour (dimmer while empty) so the
+	-- pinned slots stand out from the "Any" ones.
+	local classColor = (not isClassRun) and slot.class and RAID_CLASS_COLORS[slot.class]
+	if classColor then
+		local k = matchedName and 1 or 0.8
+		card.label:SetTextColor(classColor.r * k, classColor.g * k, classColor.b * k)
+	end
+
+	if not isClassRun and JohnnysRaidComp.db.profile.raidCompClassPins ~= false then
+		card.menuBtn:Show()
+	else
+		card.menuBtn:Hide()
+	end
+
 	-- Tank toggle only makes sense on a filled Class Run slot for a class
 	-- that actually has a tank spec (see CLASS_RUN_TANK_CAPABLE) - regular
 	-- raid+size slots already track TANK/HEALER/DAMAGER via the real role
 	-- icon, so the manual marker would be redundant there.
-	if isClassRun and matchedName and RaidCompUI.CLASS_RUN_TANK_CAPABLE[slot.class] then
+	if isClassRun and RaidCompUI.CLASS_RUN_TANK_CAPABLE[slot.class] then
 		local templateKey = CurrentTemplateKey()
 		card.tankToggle:SetChecked(templateKey and JohnnysRaidComp.db.profile.raidCompClassRunTank[templateKey] == slot.class)
 		card.tankToggle:Show()
@@ -683,7 +1044,7 @@ function SetCardState(card, slot, matchedName, matchedClass, isClassRun)
 		card.tankToggle:Hide()
 	end
 
-	if isClassRun and matchedName and RaidCompUI.CLASS_RUN_HEALER_CAPABLE[slot.class] then
+	if isClassRun and RaidCompUI.CLASS_RUN_HEALER_CAPABLE[slot.class] then
 		local templateKey = CurrentTemplateKey()
 		local healerSet = templateKey and JohnnysRaidComp.db.profile.raidCompClassRunHealers[templateKey]
 		card.healerToggle:SetChecked(healerSet and healerSet[slot.class])
@@ -855,7 +1216,8 @@ local function SetFrameHeight(height)
 	if not mainFrame then
 		return
 	end
-	mainFrame:SetHeight(math.max(MIN_FRAME_HEIGHT, math.floor(height + 0.5)))
+	local railMin = Skin.HEADER_HEIGHT + railNeededHeight + 2
+	mainFrame:SetHeight(math.max(MIN_FRAME_HEIGHT, railMin, math.floor(height + 0.5)))
 end
 
 -- Widgets of the single-screen layout that RefreshComp repaints (built in
@@ -871,7 +1233,7 @@ local SECTIONS = {
 	{ role = "DAMAGER", key = "dps", label = "DPS" },
 }
 
-local IDLE_HINT = "Click two slots to swap. Right-click: undo. Ctrl+click: re-scan GS."
+local IDLE_HINT = "Click two slots to swap. Right-click: undo. Alt+click: kick. Corner arrow: class or role."
 
 -- Positions slot card `index` as the n-th card of a section whose first row
 -- starts at `y` (relative to compPage's top), and paints its state.
@@ -898,7 +1260,7 @@ local function RefreshNeedBar(template, matches, roster)
 			if slot.role then
 				empty[slot.role] = empty[slot.role] + 1
 			else
-				table.insert(emptyClasses, slot.label)
+				table.insert(emptyClasses, RaidCompUI:SlotLabel(CurrentTemplateKey(), slot))
 			end
 		end
 	end
@@ -947,9 +1309,19 @@ end
 
 -- Footer hint: what the next click will do while something is selected,
 -- otherwise the short how-to.
-local function RefreshHint(template)
+local function RefreshHint(template, roster)
 	local C = Skin.C
 	if not selection then
+		local okSummary, summary, allGood = pcall(ReadySummary, roster or {})
+		if okSummary and summary then
+			hintText:SetText(summary)
+			if allGood then
+				hintText:SetTextColor(C.accent[1], C.accent[2], C.accent[3])
+			else
+				hintText:SetTextColor(1, 0.85, 0.40)
+			end
+			return
+		end
 		hintText:SetText(IDLE_HINT)
 		hintText:SetTextColor(C.dim[1], C.dim[2], C.dim[3])
 		return
@@ -1106,7 +1478,19 @@ function RaidCompUI:RefreshComp()
 	-- pcall'd like the GearScore reads above - these only decorate the
 	-- window and must never be able to break the grid.
 	pcall(RefreshNeedBar, template, matches, roster)
-	RefreshHint(template)
+	RefreshHint(template, roster)
+	if kickBtn then
+		local afk = ReadyAfkNames(roster)
+		if #afk > 0 then
+			kickBtn.text:SetText(string.format("Kick AFK (%d)", #afk))
+			kickBtn:Show()
+		else
+			kickBtn:Hide()
+		end
+	end
+	if readyBtn then
+		readyBtn.text:SetText(readyActive and "Checking..." or "Ready check")
+	end
 
 	local okNames, names = pcall(self.GetUninspectedNames, self)
 	local uninspected = (okNames and names) and #names or 0
@@ -1122,7 +1506,7 @@ function RaidCompUI:RefreshComp()
 
 	-- Window = title strip + top inset + everything laid out above + the
 	-- footer button strip + bottom margin.
-	SetFrameHeight(Skin.HEADER_HEIGHT + PAGE_TOP_INSET + (-y) + 8 + FOOTER_HEIGHT + PAGE_BOTTOM_INSET)
+	SetFrameHeight(Skin.HEADER_HEIGHT + PAGE_TOP_INSET + (-y) + 18 + FOOTER_HEIGHT + PAGE_BOTTOM_INSET)
 end
 
 ----------------------------------------------------------------------------
@@ -1176,6 +1560,205 @@ local function ResetCounts()
 	local templateKey = currentRaid .. "_" .. currentSize
 	JohnnysRaidComp.db.profile.raidCompRoleCounts[templateKey] = nil
 	RebuildCurrentTemplate(templateKey, RaidCompUI:GetDefaultCounts(currentRaid, currentSize))
+end
+
+----------------------------------------------------------------------------
+-- Class-slot editing - each slot card's corner arrow opens a menu to pin the
+-- slot to a class (or back to "Any"), or to move a class slot to another role
+-- it can play: moving the Shaman slot to Healers turns one "Any Healer" into
+-- "Shaman" and leaves an "Any DPS" behind, so the headcounts never change.
+-- Saved per raid+size in profile.raidCompClassSlots.
+----------------------------------------------------------------------------
+local slotMenuFrame
+
+-- This raid+size's editable class-slot lists, seeded from the built-in picks
+-- the first time anything is changed.
+local function EditableClassSlots(templateKey)
+	local all = JohnnysRaidComp.db.profile.raidCompClassSlots
+	local pins = all[templateKey]
+	if not pins then
+		pins = RaidCompUI:GetDefaultClassSlots(currentRaid, currentSize)
+		all[templateKey] = pins
+	end
+	pins.TANK = pins.TANK or {}
+	pins.HEALER = pins.HEALER or {}
+	pins.DAMAGER = pins.DAMAGER or {}
+	return pins
+end
+
+-- Rebuilds the open template after a class-slot edit. Slot positions shift
+-- when a class slot is added/moved, so manual placements are carried over by
+-- player instead of by position: each goes back into a slot of the same role,
+-- preferring one pinned to their class.
+local function RebuildKeepingPlacements(templateKey)
+	local old = RaidCompUI.TEMPLATES[templateKey]
+	local allOverrides = JohnnysRaidComp.db.profile.raidCompManualAssignments
+	local overrides = allOverrides[templateKey]
+	local kept = {}
+	if old and overrides then
+		for i, slot in ipairs(old.slots) do
+			if type(overrides[i]) == "string" then
+				table.insert(kept, { name = overrides[i], role = slot.role })
+			end
+		end
+	end
+
+	RaidCompUI:RebuildTemplate(currentRaid, currentSize)
+
+	local fresh
+	if #kept > 0 then
+		local template = RaidCompUI.TEMPLATES[templateKey]
+		local classByName = {}
+		for _, member in ipairs(RaidCompUI:ScanRoster()) do
+			classByName[member.name] = member.class
+		end
+		fresh = {}
+		for pass = 1, 2 do
+			for _, entry in ipairs(kept) do
+				if not entry.done then
+					for i, slot in ipairs(template.slots) do
+						local fits
+						if pass == 1 then
+							fits = slot.class and slot.class == classByName[entry.name]
+						else
+							fits = not slot.class
+						end
+						if fresh[i] == nil and slot.role == entry.role and fits then
+							fresh[i] = entry.name
+							entry.done = true
+							break
+						end
+					end
+				end
+			end
+		end
+	end
+	allOverrides[templateKey] = fresh
+
+	ClearSelection()
+	RaidCompUI:RefreshComp()
+end
+
+-- Pins the slot to `class`, or back to "Any" with class == nil.
+local function SetSlotClass(slot, class)
+	local templateKey = CurrentTemplateKey()
+	if not templateKey or not slot or not slot.role or slot.class == class then
+		return
+	end
+	local list = EditableClassSlots(templateKey)[slot.role]
+	if slot.pinIndex then
+		if class then
+			list[slot.pinIndex] = class
+		else
+			table.remove(list, slot.pinIndex)
+		end
+	elseif class then
+		table.insert(list, class)
+	end
+	RebuildKeepingPlacements(templateKey)
+end
+
+-- True when `role` still has an "Any" slot a class slot could take over.
+local function RoleHasRoom(templateKey, role)
+	local template = RaidCompUI.TEMPLATES[templateKey]
+	if not template then
+		return false
+	end
+	for _, slot in ipairs(template.slots) do
+		if slot.role == role and not slot.class then
+			return true
+		end
+	end
+	return false
+end
+
+-- Moves a class slot to another role: it replaces one of that role's "Any"
+-- slots and its old slot becomes an "Any" of the role it left.
+local function MoveSlotRole(slot, newRole)
+	local templateKey = CurrentTemplateKey()
+	if not templateKey or not slot or not slot.class or not slot.pinIndex or slot.role == newRole then
+		return
+	end
+	if not RoleHasRoom(templateKey, newRole) then
+		return
+	end
+	local pins = EditableClassSlots(templateKey)
+	table.remove(pins[slot.role], slot.pinIndex)
+	table.insert(pins[newRole], slot.class)
+	RebuildKeepingPlacements(templateKey)
+end
+
+-- Back to the raid's built-in class slots.
+local function ResetClassSlots()
+	local templateKey = CurrentTemplateKey()
+	if not templateKey or currentSize == "CLASSRUN" then
+		return
+	end
+	JohnnysRaidComp.db.profile.raidCompClassSlots[templateKey] = nil
+	RebuildKeepingPlacements(templateKey)
+end
+
+local ROLE_MENU_NAMES = { TANK = "Tanks", HEALER = "Healers", DAMAGER = "DPS" }
+local ROLE_MENU_ORDER = { "TANK", "HEALER", "DAMAGER" }
+
+function ShowSlotMenu(card)
+	local slot = card and card.slot
+	local templateKey = CurrentTemplateKey()
+	if not slot or not slot.role or not templateKey or currentSize == "CLASSRUN" then
+		return
+	end
+	if not slotMenuFrame then
+		slotMenuFrame = CreateFrame("Frame", "JohnnysRaidCompSlotMenu", UIParent, "UIDropDownMenuTemplate")
+	end
+
+	local menu = {}
+	if slot.class then
+		table.insert(menu, { text = "Move this " .. slot.label .. " slot to", isTitle = true, notCheckable = true })
+		for _, role in ipairs(ROLE_MENU_ORDER) do
+			if RaidCompUI.ROLE_CLASSES[role][slot.class] then
+				local target = role
+				local isCurrent = (role == slot.role)
+				local hasRoom = isCurrent or RoleHasRoom(templateKey, role)
+				table.insert(menu, {
+					text = ROLE_MENU_NAMES[role] .. ((not hasRoom) and "  (no free slot)" or ""),
+					checked = isCurrent,
+					disabled = not hasRoom,
+					func = function() MoveSlotRole(slot, target) end,
+				})
+			end
+		end
+	end
+
+	table.insert(menu, { text = "Class for this slot", isTitle = true, notCheckable = true })
+	table.insert(menu, {
+		text = "Any class",
+		checked = not slot.class,
+		func = function() SetSlotClass(slot, nil) end,
+	})
+	for _, class in ipairs(RaidCompUI.CLASS_ORDER) do
+		if RaidCompUI.ROLE_CLASSES[slot.role][class] then
+			local pick = class
+			local color = RAID_CLASS_COLORS[class]
+			local label = RaidCompUI.CLASS_LABELS[class]
+			if color then
+				label = string.format("|cff%02x%02x%02x%s|r", color.r * 255, color.g * 255, color.b * 255, label)
+			end
+			table.insert(menu, {
+				text = label,
+				checked = (slot.class == class),
+				func = function() SetSlotClass(slot, pick) end,
+			})
+		end
+	end
+
+	table.insert(menu, { text = " ", isTitle = true, notCheckable = true })
+	table.insert(menu, {
+		text = "Reset this raid's class slots",
+		notCheckable = true,
+		func = ResetClassSlots,
+	})
+
+	EasyMenu(menu, slotMenuFrame, "cursor", 0, 0, "MENU")
 end
 
 -- Rebuilds a raid+size's template from its saved custom count (if any) and
@@ -1370,7 +1953,38 @@ local function MakePrimary(btn)
 	Idle()
 end
 
--- Left rail: one numbered row per raid, lime bar + number on the active one.
+-- Left rail: one collapsible group per expansion (Data.lua's RAID_GROUPS),
+-- each a clickable heading over numbered raid rows, with a lime bar + number
+-- on the active raid. Folded groups are remembered (raidCompRailCollapsed).
+local railGroups = {}
+local RAIL_GROUP_HEIGHT = 24
+
+-- Stacks the group headings and the rows of whichever groups are open, and
+-- records how tall the rail now needs to be (see SetFrameHeight).
+local function LayoutRail()
+	local collapsed = JohnnysRaidComp.db.profile.raidCompRailCollapsed
+	local y = 4
+	for _, entry in ipairs(railGroups) do
+		local isCollapsed = collapsed[entry.group.key] and true or false
+		entry.header:ClearAllPoints()
+		entry.header:SetPoint("TOPLEFT", 0, -y)
+		entry.header.sign:SetText(isCollapsed and "+" or "-")
+		y = y + RAIL_GROUP_HEIGHT
+		for _, btn in ipairs(entry.rows) do
+			if isCollapsed then
+				btn:Hide()
+			else
+				btn:ClearAllPoints()
+				btn:SetPoint("TOPLEFT", 0, -y)
+				btn:Show()
+				y = y + RAIL_ROW_HEIGHT
+			end
+		end
+		y = y + 4
+	end
+	railNeededHeight = y + 6
+end
+
 local function BuildRail()
 	local C = Skin.C
 	local rail = CreateFrame("Frame", nil, mainFrame)
@@ -1386,45 +2000,70 @@ local function BuildRail()
 	divider:SetPoint("BOTTOMRIGHT", rail, "BOTTOMRIGHT", 0, 0)
 	divider:SetWidth(1)
 
-	local heading = Skin:Heading(rail, 10, C.muted)
-	heading:SetPoint("TOPLEFT", 12, -10)
-	heading:SetText("RAIDS")
+	for _, group in ipairs(RaidCompUI.RAID_GROUPS) do
+		local entry = { group = group, rows = {} }
 
-	for i, raidKey in ipairs(RaidCompUI.RAID_ORDER) do
-		local btn = CreateFrame("Button", nil, rail)
-		btn:SetSize(RAIL_WIDTH - 1, RAIL_ROW_HEIGHT)
-		btn:SetPoint("TOPLEFT", 0, -RAIL_TOP - (i - 1) * RAIL_ROW_HEIGHT)
+		local header = CreateFrame("Button", nil, rail)
+		header:SetSize(RAIL_WIDTH - 1, RAIL_GROUP_HEIGHT)
+		local headerHl = header:CreateTexture(nil, "HIGHLIGHT")
+		headerHl:SetAllPoints()
+		headerHl:SetTexture(Skin.WHITE)
+		headerHl:SetVertexColor(C.accent[1], C.accent[2], C.accent[3], 0.08)
+		header.label = Skin:Heading(header, 11, C.muted)
+		header.label:SetPoint("LEFT", header, "LEFT", 12, 0)
+		header.label:SetText(string.upper(group.label))
+		header.sign = header:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+		header.sign:SetPoint("RIGHT", header, "RIGHT", -10, 0)
+		header.sign:SetTextColor(C.muted[1], C.muted[2], C.muted[3])
+		header:SetScript("OnClick", function()
+			local collapsed = JohnnysRaidComp.db.profile.raidCompRailCollapsed
+			collapsed[group.key] = not collapsed[group.key]
+			LayoutRail()
+			-- Re-fits the window height to the rail's new length.
+			RaidCompUI:RefreshComp()
+		end)
+		entry.header = header
 
-		btn.bg = btn:CreateTexture(nil, "BORDER")
-		btn.bg:SetAllPoints()
-		btn.bg:SetTexture(Skin.WHITE)
-		btn.bg:SetVertexColor(0.122, 0.153, 0.169, 1)
-		btn.bg:Hide()
+		for i, raidKey in ipairs(group.raids) do
+			local btn = CreateFrame("Button", nil, rail)
+			btn:SetSize(RAIL_WIDTH - 1, RAIL_ROW_HEIGHT)
 
-		local hl = btn:CreateTexture(nil, "HIGHLIGHT")
-		hl:SetAllPoints()
-		hl:SetTexture(Skin.WHITE)
-		hl:SetVertexColor(C.accent[1], C.accent[2], C.accent[3], 0.10)
+			btn.bg = btn:CreateTexture(nil, "BORDER")
+			btn.bg:SetAllPoints()
+			btn.bg:SetTexture(Skin.WHITE)
+			btn.bg:SetVertexColor(0.122, 0.153, 0.169, 1)
+			btn.bg:Hide()
 
-		btn.bar = Skin:Solid(btn, "ARTWORK", C.accent)
-		btn.bar:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
-		btn.bar:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", 0, 0)
-		btn.bar:SetWidth(2)
-		btn.bar:Hide()
+			local hl = btn:CreateTexture(nil, "HIGHLIGHT")
+			hl:SetAllPoints()
+			hl:SetTexture(Skin.WHITE)
+			hl:SetVertexColor(C.accent[1], C.accent[2], C.accent[3], 0.10)
 
-		btn.num = Skin:Heading(btn, 14, C.dim)
-		btn.num:SetPoint("LEFT", btn, "LEFT", 12, 0)
-		btn.num:SetText(string.format("%02d", i))
+			btn.bar = Skin:Solid(btn, "ARTWORK", C.accent)
+			btn.bar:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
+			btn.bar:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", 0, 0)
+			btn.bar:SetWidth(2)
+			btn.bar:Hide()
 
-		btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-		btn.text:SetPoint("LEFT", btn, "LEFT", 36, 0)
-		btn.text:SetPoint("RIGHT", btn, "RIGHT", -6, 0)
-		btn.text:SetJustifyH("LEFT")
-		btn.text:SetText(RaidCompUI.RAID_LABELS[raidKey])
+			btn.num = Skin:Heading(btn, 14, C.dim)
+			btn.num:SetPoint("LEFT", btn, "LEFT", 12, 0)
+			btn.num:SetText(string.format("%02d", i))
 
-		btn:SetScript("OnClick", function() SelectRaid(raidKey) end)
-		raidButtons[raidKey] = btn
+			btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+			btn.text:SetPoint("LEFT", btn, "LEFT", 36, 0)
+			btn.text:SetPoint("RIGHT", btn, "RIGHT", -6, 0)
+			btn.text:SetJustifyH("LEFT")
+			btn.text:SetText(RaidCompUI.RAID_LABELS[raidKey])
+
+			btn:SetScript("OnClick", function() SelectRaid(raidKey) end)
+			raidButtons[raidKey] = btn
+			table.insert(entry.rows, btn)
+		end
+
+		table.insert(railGroups, entry)
 	end
+
+	LayoutRail()
 end
 
 local function BuildCompPage()
@@ -1516,22 +2155,48 @@ local function BuildCompPage()
 	-- Fixed bottom strip - pings roster members not yet GearScore-inspected
 	-- (normally those out of inspect range) to report to Violet Hold. See
 	-- RaidCompUI:AnnounceUninspected. Label/enabled state set in RefreshComp.
-	reportVHBtn = Skin:CreateButton(compPage, 190, FOOTER_HEIGHT, "Ping uninspected to VH")
+	reportVHBtn = Skin:CreateButton(compPage, 172, FOOTER_HEIGHT, "Ping uninspected to VH")
 	reportVHBtn:SetPoint("BOTTOMLEFT", compPage, "BOTTOMLEFT", 0, 0)
 	reportVHBtn:SetScript("OnClick", function() RaidCompUI:AnnounceUninspected() end)
 
 	-- Force a fresh GearScore sweep of the whole roster in place - see
 	-- RaidCompUI:RescanAllGearScores.
-	local rescanAllBtn = Skin:CreateButton(compPage, 110, FOOTER_HEIGHT, "Re-scan all GS")
+	local rescanAllBtn = Skin:CreateButton(compPage, 102, FOOTER_HEIGHT, "Re-scan all GS")
 	rescanAllBtn:SetPoint("LEFT", reportVHBtn, "RIGHT", 6, 0)
 	rescanAllBtn:SetScript("OnClick", function() RaidCompUI:RescanAllGearScores() end)
 
 	reportVHStatus = compPage:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	reportVHStatus:SetPoint("LEFT", rescanAllBtn, "RIGHT", 8, 0)
+	-- Starts a ready check and flags the answers on the cards (see the ready
+	-- check section). Right-click clears the flags.
+	readyBtn = Skin:CreateButton(compPage, 88, FOOTER_HEIGHT, "Ready check")
+	readyBtn:SetPoint("LEFT", rescanAllBtn, "RIGHT", 6, 0)
+	readyBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	readyBtn:SetScript("OnClick", function(self, mouseButton) OnReadyButton(mouseButton) end)
+	readyBtn:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_TOP")
+		GameTooltip:SetText("Ready check")
+		GameTooltip:AddLine("Anyone who doesn't answer is flagged AFK on their slot.", 1, 1, 1, true)
+		GameTooltip:AddLine("Right-click: clear the flags.", 0.6, 0.66, 0.65)
+		GameTooltip:Show()
+	end)
+	readyBtn:SetScript("OnLeave", GameTooltip_Hide)
+
+	-- Only shown after a ready check that left someone flagged AFK (see
+	-- RefreshComp) - removes all of them, after a confirm popup.
+	kickBtn = Skin:CreateButton(compPage, 92, FOOTER_HEIGHT, "Kick AFK")
+	kickBtn:SetPoint("LEFT", readyBtn, "RIGHT", 6, 0)
+	kickBtn:SetBackdropBorderColor(C.short[1], C.short[2], C.short[3], 1)
+	kickBtn.text:SetTextColor(C.short[1], C.short[2], C.short[3])
+	kickBtn:SetScript("OnClick", function()
+		ConfirmKick(ReadyAfkNames(RaidCompUI:ScanRoster()))
+	end)
+	kickBtn:Hide()
+
+	reportVHStatus:SetPoint("BOTTOMLEFT", reportVHBtn, "TOPLEFT", 0, 3)
 
 	hintText = compPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	hintText:SetPoint("BOTTOMRIGHT", compPage, "BOTTOMRIGHT", 0, 5)
-	hintText:SetWidth(360)
+	hintText:SetWidth(330)
 	hintText:SetJustifyH("RIGHT")
 	hintText:SetText(IDLE_HINT)
 end

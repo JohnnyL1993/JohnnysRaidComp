@@ -223,12 +223,26 @@ local function ComputeNeedText(templateKey)
 	local roster = RaidCompUI:ScanRoster()
 	local matches = RaidCompUI:BuildMatches(templateKey, roster)
 
+	-- Per role: how many plain "Any" slots are open, then each open class slot
+	-- by its label with a count ("4 Healer, 1 Resto Shaman"). A slot with no
+	-- role (Class Run) is listed by label alone.
+	local ROLES = { "TANK", "HEALER", "DAMAGER" }
+	local ROLE_WORD = { TANK = "Tank", HEALER = "Healer", DAMAGER = "DPS" }
 	local genericShort = { TANK = 0, HEALER = 0, DAMAGER = 0 }
-	local specificNeeds = {}
+	local specific = { TANK = {}, HEALER = {}, DAMAGER = {} }
+	local specificCount = {}
+	local loose = {}
 	for _, slot in ipairs(template.slots) do
 		if not matches[slot] then
-			if slot.class then
-				table.insert(specificNeeds, slot.label)
+			if not slot.role then
+				table.insert(loose, RaidCompUI:SlotLabel(templateKey, slot))
+			elseif slot.class then
+				local key = slot.role .. ":" .. slot.label
+				if not specificCount[key] then
+					specificCount[key] = 0
+					table.insert(specific[slot.role], slot.label)
+				end
+				specificCount[key] = specificCount[key] + 1
 			else
 				genericShort[slot.role] = genericShort[slot.role] + 1
 			end
@@ -236,10 +250,15 @@ local function ComputeNeedText(templateKey)
 	end
 
 	local parts = {}
-	if genericShort.TANK > 0 then table.insert(parts, genericShort.TANK .. " Tank") end
-	if genericShort.HEALER > 0 then table.insert(parts, genericShort.HEALER .. " Healer") end
-	if genericShort.DAMAGER > 0 then table.insert(parts, genericShort.DAMAGER .. " DPS") end
-	for _, label in ipairs(specificNeeds) do
+	for _, role in ipairs(ROLES) do
+		if genericShort[role] > 0 then
+			table.insert(parts, genericShort[role] .. " " .. ROLE_WORD[role])
+		end
+		for _, label in ipairs(specific[role]) do
+			table.insert(parts, specificCount[role .. ":" .. label] .. " " .. label)
+		end
+	end
+	for _, label in ipairs(loose) do
 		table.insert(parts, label)
 	end
 
