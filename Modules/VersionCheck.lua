@@ -13,6 +13,10 @@
 -- those lines (and the channel's join/leave notices) from every chat frame.
 -- SendAddonMessage still works for GUILD / RAID / PARTY, so those use it.
 --
+-- Channel lines from every Johnny's addon go through one shared queue (see
+-- Sending) that spaces them out, so logging in with them all at once can't
+-- trip the server's chat flood mute.
+--
 -- Sends are kept rare so the channel never looks like spam: once on the
 -- channel after joining, once to guild at login, to the group on roster
 -- changes (throttled), and a single delayed reply when we hear someone on an
@@ -183,11 +187,53 @@ local function Message()
 	return TAG .. ":" .. myVersion
 end
 
-local function SendOnChannel()
-	local id = GetChannelName(CHANNEL)
-	if id and id > 0 then
-		SendChatMessage(Message(), "CHANNEL", nil, id)
+-- One channel send queue shared by every Johnny's addon. Whichever loads
+-- first creates it (a higher QUEUE_REV replaces the OnUpdate/Push), so all
+-- their channel lines go out one at a time instead of together and tripping
+-- the server's chat flood mute ("You can speak again in...").
+local QUEUE_REV = 1
+local CHANNEL_SPACING = 10 -- seconds between any two channel lines
+
+local Queue = _G.JohnnysAddonsChannelQueue
+if not Queue or (Queue.rev or 0) < QUEUE_REV then
+	Queue = Queue or { items = {}, lastSend = -CHANNEL_SPACING }
+	Queue.rev = QUEUE_REV
+	Queue.frame = Queue.frame or CreateFrame("Frame")
+
+	-- key is the addon's TAG, so a line already waiting isn't queued twice.
+	function Queue:Push(key, fn)
+		for _, item in ipairs(self.items) do
+			if item.key == key then
+				return
+			end
+		end
+		table.insert(self.items, { key = key, fn = fn })
+		self.frame:Show()
 	end
+
+	Queue.frame:SetScript("OnUpdate", function(frame)
+		if #Queue.items == 0 then
+			frame:Hide()
+			return
+		end
+		local now = GetTime()
+		if now - Queue.lastSend >= CHANNEL_SPACING then
+			Queue.lastSend = now
+			table.remove(Queue.items, 1).fn()
+		end
+	end)
+	Queue.frame:Hide()
+
+	_G.JohnnysAddonsChannelQueue = Queue
+end
+
+local function SendOnChannel()
+	Queue:Push(TAG, function()
+		local id = GetChannelName(CHANNEL)
+		if id and id > 0 then
+			SendChatMessage(Message(), "CHANNEL", nil, id)
+		end
+	end)
 end
 
 local function SendAddon(distribution)

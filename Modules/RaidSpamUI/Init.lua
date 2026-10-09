@@ -489,7 +489,7 @@ end
 local function AddDivider(parent, yOffset)
 	local tex = parent:CreateTexture(nil, "ARTWORK")
 	tex:SetTexture(Skin.WHITE)
-	tex:SetVertexColor(0.3, 0.3, 0.3, 1)
+	tex:SetVertexColor(0.180, 0.224, 0.243, 1)
 	tex:SetPoint("TOPLEFT", 4, yOffset)
 	tex:SetPoint("TOPRIGHT", -4, yOffset)
 	tex:SetHeight(1)
@@ -957,9 +957,7 @@ local function BuildFrame()
 		JohnnysRaidComp.WindowSettings:Register(mainFrame, "raidspam", "Raid Spammer")
 	end
 
-	local title = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
-	title:SetPoint("TOP", 0, -16)
-	title:SetText("Raid Spammer")
+	Skin:AddHeader(mainFrame, "Raid Spammer")
 
 	local close = Skin:CreateButton(mainFrame, 20, 20, "X")
 	close:SetPoint("TOPRIGHT", -4, -4)

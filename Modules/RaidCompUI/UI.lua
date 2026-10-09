@@ -1,5 +1,6 @@
--- Raid Comp window: pick a WotLK raid instance, then its size/difficulty,
--- then see that raid's tailored "ideal comp" grid light up as real raid/party
+-- Raid Comp window, one screen: a rail of WotLK raids on the left, size
+-- toggles across the top, and that raid+size's tailored "ideal comp" below,
+-- grouped into Tanks / Healers / DPS sections that light up as real raid/party
 -- members whose class+role match a slot join the group. Same plain
 -- CreateFrame/Skin chrome as the rest of the hub (see Modules\BlackListUI\UI.lua
 -- for the pattern this mirrors).
@@ -7,42 +8,46 @@ JohnnysRaidComp.RaidCompUI = JohnnysRaidComp.RaidCompUI or {}
 local RaidCompUI = JohnnysRaidComp.RaidCompUI
 local Skin = JohnnysRaidComp.Skin
 
--- FRAME_HEIGHT is only the starting/fallback size - every page sizes the
--- window to its own content (see SetFrameHeight and its callers in
--- ShowRaidList / ShowSizeList / RefreshComp) so a 2-row 10-man or the raid
--- picker doesn't leave a screenful of dead space below it.
-local FRAME_WIDTH, FRAME_HEIGHT = 820, 560
+-- FRAME_HEIGHT is only the starting/fallback size - RefreshComp sizes the
+-- window to its content (see SetFrameHeight) so a 10-man doesn't leave a
+-- screenful of dead space below it.
+local FRAME_WIDTH, FRAME_HEIGHT = 1000, 560
 
-local RAID_COLS = 3
-local RAID_BUTTON_WIDTH, RAID_BUTTON_HEIGHT = 230, 34
-local RAID_GAP = 10
+local SIZE_BUTTON_WIDTH, SIZE_BUTTON_HEIGHT = 104, 22
+local SIZE_GAP = 4
 
-local SIZE_BUTTON_WIDTH, SIZE_BUTTON_HEIGHT = 160, 28
-local SIZE_GAP = 12
-
-local COLUMNS = 5
+local COLUMNS = 6
 -- Tall enough for a 3rd line (GearScore) below the name; GRID_TOP/row math
 -- below all derive from this constant, so nothing else needs adjusting.
-local CARD_WIDTH, CARD_HEIGHT = 148, 58
+local CARD_WIDTH, CARD_HEIGHT = 131, 58
 local CARD_GAP = 6
-local GRID_TOP = -104
+-- Where the first role section starts, below the size toggles (22px) and the
+-- need bar (24px at NEED_BAR_TOP) - all relative to compPage's top.
+local NEED_BAR_TOP = 30
+local GRID_TOP = -62
+-- Each role section: a heading row, its cards, then a gap before the next.
+local SECTION_HEAD = 24
+local SECTION_GAP = 6
+
+-- Left rail of raids, and compPage's insets inside the window.
+local RAIL_WIDTH = 160
+local RAIL_TOP = 28
+local RAIL_ROW_HEIGHT = 26
+local PAGE_TOP_INSET = 10
+local PAGE_BOTTOM_INSET = 12
+local FOOTER_HEIGHT = 22
 
 -- Bench (overflow) chips - roster members who didn't land in any slot,
 -- rendered below the grid so nobody just silently vanishes off-screen.
-local BENCH_COLUMNS = 6
+local BENCH_COLUMNS = 7
 -- Tall enough for a 2nd, small line (compact GearScore) below the name.
 local BENCH_CHIP_WIDTH, BENCH_CHIP_HEIGHT = 110, 30
 local BENCH_GAP = 6
 
--- Turns "how many pixels of grid/bench sit below GRID_TOP" into a window
--- height. Above the grid: compPage's 44px top inset + the header/hint block
--- down to GRID_TOP. Below: a small gap + the Report-to-VH button strip + the
--- bottom margin. See SetFrameHeight / its call at the end of RefreshComp.
-local COMP_CHROME_TOP = 44 - GRID_TOP
-local COMP_CHROME_BOTTOM = 52
-local MIN_FRAME_HEIGHT = 240
+-- Tall enough for the rail's raid list even when the grid is tiny.
+local MIN_FRAME_HEIGHT = 320
 
-local mainFrame, raidListPage, sizeListPage, compPage
+local mainFrame, compPage
 local sizeListButtons = {}
 local classRunEntryButton
 local headerText = {}
@@ -58,9 +63,6 @@ local benchLabel
 -- BuildCompPage / RaidCompUI:AnnounceUninspected).
 local reportVHStatus
 local currentRaid, currentSize
--- What "< Back" on the comp page should do - differs depending on whether we
--- arrived via the normal size list or Class Run.
-local compBackAction
 
 -- matches from the last RefreshComp, so a click can read "who's in slot X
 -- right now" without recomputing; and the current selection awaiting a
@@ -266,7 +268,7 @@ function RaidCompUI:BuildMatches(templateKey, roster)
 end
 
 ----------------------------------------------------------------------------
--- Manual placement - clicking a slot or a bench chip selects it (gold
+-- Manual placement - clicking a slot or a bench chip selects it (white
 -- border); clicking a second one acts on the pair: slot+slot swaps their
 -- occupants, slot+bench drops the benched player into that slot (whoever
 -- was there, if anyone, simply becomes unclaimed and reappears on the bench
@@ -542,7 +544,7 @@ function EnsureSlotCard(index)
 	card.flashTex:SetVertexColor(1, 0.82, 0)
 	card.flashTex:Hide()
 
-	card.label = card:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	card.label = Skin:Heading(card, 11, Skin.C.muted)
 	card.label:SetPoint("TOP", 0, -6)
 	card.label:SetWidth(CARD_WIDTH - 8)
 	card.label:SetJustifyH("CENTER")
@@ -623,13 +625,13 @@ end
 function SetCardState(card, slot, matchedName, matchedClass, isClassRun)
 	card.slot = slot
 	card.matchedName = matchedName
-	card.label:SetText(slot.label)
+	card.label:SetText(string.upper(slot.label))
 
 	if matchedName then
-		card:SetBackdropColor(0.10, 0.10, 0.10, 0.95)
-		card:SetBackdropBorderColor(0.3, 0.9, 0.3, 1)
-		card.label:SetTextColor(1, 1, 1)
-		card.nameText:SetTextColor(0.3, 1, 0.3)
+		card:SetBackdropColor(0.090, 0.114, 0.125, 0.95)
+		card:SetBackdropBorderColor(Skin.C.accent[1], Skin.C.accent[2], Skin.C.accent[3], 1)
+		card.label:SetTextColor(Skin.C.muted[1], Skin.C.muted[2], Skin.C.muted[3])
+		card.nameText:SetTextColor(Skin.C.text[1], Skin.C.text[2], Skin.C.text[3])
 		card.nameText:SetText(FormatNameWithClass(matchedName, matchedClass))
 
 		-- pcall'd for the same reason as RefreshComp's RequestGearScore loop -
@@ -659,11 +661,11 @@ function SetCardState(card, slot, matchedName, matchedClass, isClassRun)
 			card:SetBackdropBorderColor(0.9, 0.15, 0.15, 1)
 		end
 	else
-		card:SetBackdropColor(0.08, 0.08, 0.08, 0.4)
-		card:SetBackdropBorderColor(0.25, 0.25, 0.25, 0.4)
-		card.label:SetTextColor(0.5, 0.5, 0.5)
-		card.nameText:SetTextColor(0.4, 0.4, 0.4)
-		card.nameText:SetText("-- empty --")
+		card:SetBackdropColor(0.063, 0.078, 0.086, 0.8)
+		card:SetBackdropBorderColor(0.180, 0.224, 0.243, 1)
+		card.label:SetTextColor(Skin.C.dim[1], Skin.C.dim[2], Skin.C.dim[3])
+		card.nameText:SetTextColor(Skin.C.dim[1], Skin.C.dim[2], Skin.C.dim[3])
+		card.nameText:SetText("open")
 		card.gsText:Hide()
 		card.pvpBadge:Hide()
 		card.blacklistEntry = nil
@@ -691,7 +693,7 @@ function SetCardState(card, slot, matchedName, matchedClass, isClassRun)
 	end
 
 	if selection and selection.kind == "slot" and slotCards[selection.value] == card then
-		card:SetBackdropBorderColor(1, 0.82, 0, 1)
+		card:SetBackdropBorderColor(1, 1, 1, 1)
 	end
 end
 
@@ -752,8 +754,8 @@ end
 function SetBenchChipState(chip, name, class)
 	chip.name = name
 	chip.nameText:SetText(FormatNameWithClass(name, class))
-	chip:SetBackdropColor(0.08, 0.08, 0.08, 0.6)
-	chip:SetBackdropBorderColor(0.5, 0.5, 0.2, 0.8)
+	chip:SetBackdropColor(0.090, 0.114, 0.125, 0.6)
+	chip:SetBackdropBorderColor(Skin.C.rule2[1], Skin.C.rule2[2], Skin.C.rule2[3], 1)
 	chip.nameText:SetTextColor(1, 0.9, 0.6)
 
 	-- pcall'd for the same reason as SetCardState's GS lookup - must never be
@@ -779,7 +781,7 @@ function SetBenchChipState(chip, name, class)
 	end
 
 	if selection and selection.kind == "bench" and selection.value == name then
-		chip:SetBackdropBorderColor(1, 0.82, 0, 1)
+		chip:SetBackdropBorderColor(1, 1, 1, 1)
 	end
 end
 
@@ -840,18 +842,15 @@ function RaidCompUI:AnnounceUninspected()
 end
 
 function SetHeaderCount(fs, label, have, needed)
-	fs:SetText(string.format("%s: %d/%d", label, have, needed))
-	if have >= needed then
-		fs:SetTextColor(0.3, 1, 0.3)
-	else
-		fs:SetTextColor(1, 0.4, 0.4)
-	end
+	fs:SetText(string.format("%s  %d/%d", string.upper(label), have, needed))
+	local color = (have >= needed) and Skin.C.accent or Skin.C.short
+	fs:SetTextColor(color[1], color[2], color[3])
 end
 
 -- Resize to `height` (clamped) without moving the window - SetHeight keeps
 -- the frame's anchor point, so a CENTER-anchored window just grows/shrinks
--- evenly about its middle. Every page calls this so none of them leaves a
--- screenful of empty panel below its content.
+-- evenly about its middle. RefreshComp calls this so the window is only ever
+-- as tall as the current raid's grid (and bench) needs.
 local function SetFrameHeight(height)
 	if not mainFrame then
 		return
@@ -859,9 +858,119 @@ local function SetFrameHeight(height)
 	mainFrame:SetHeight(math.max(MIN_FRAME_HEIGHT, math.floor(height + 0.5)))
 end
 
+-- Widgets of the single-screen layout that RefreshComp repaints (built in
+-- BuildCompPage further down).
+local needLabel, needText, gsSummaryText, hintText, reportVHBtn
+
+-- The grid is drawn as one labelled section per role, in template order
+-- (BuildTemplate emits tanks, then healers, then DPS), so slot indices - which
+-- manual swaps are saved against - keep their meaning.
+local SECTIONS = {
+	{ role = "TANK", key = "tank", label = "Tanks" },
+	{ role = "HEALER", key = "healer", label = "Healers" },
+	{ role = "DAMAGER", key = "dps", label = "DPS" },
+}
+
+local IDLE_HINT = "Click two slots to swap. Right-click: undo. Ctrl+click: re-scan GS."
+
+-- Positions slot card `index` as the n-th card of a section whose first row
+-- starts at `y` (relative to compPage's top), and paints its state.
+local function PlaceCard(index, slot, n, y, matches, classByName, isClassRun)
+	local card = EnsureSlotCard(index)
+	local col = (n - 1) % COLUMNS
+	local row = math.floor((n - 1) / COLUMNS)
+	card:ClearAllPoints()
+	card:SetPoint("TOPLEFT", compPage, "TOPLEFT", col * (CARD_WIDTH + CARD_GAP), y - row * (CARD_HEIGHT + CARD_GAP))
+	local matchedName = matches[slot]
+	SetCardState(card, slot, matchedName, matchedName and classByName[matchedName], isClassRun)
+	card:Show()
+end
+
+-- "STILL NEED 1 healer, 3 DPS" from the slots nobody is in, plus the roster's
+-- average / lowest cached GearScore on the right of the same bar.
+local function RefreshNeedBar(template, matches, roster)
+	local C = Skin.C
+	local empty = { TANK = 0, HEALER = 0, DAMAGER = 0 }
+	local parts = {}
+	local emptyClasses = {}
+	for _, slot in ipairs(template.slots) do
+		if not matches[slot] then
+			if slot.role then
+				empty[slot.role] = empty[slot.role] + 1
+			else
+				table.insert(emptyClasses, slot.label)
+			end
+		end
+	end
+	if empty.TANK > 0 then
+		table.insert(parts, empty.TANK .. (empty.TANK == 1 and " tank" or " tanks"))
+	end
+	if empty.HEALER > 0 then
+		table.insert(parts, empty.HEALER .. (empty.HEALER == 1 and " healer" or " healers"))
+	end
+	if empty.DAMAGER > 0 then
+		table.insert(parts, empty.DAMAGER .. " DPS")
+	end
+	for _, label in ipairs(emptyClasses) do
+		table.insert(parts, label)
+	end
+
+	if #parts > 0 then
+		needLabel:SetText("STILL NEED")
+		needLabel:SetTextColor(C.short[1], C.short[2], C.short[3])
+		needText:SetText(table.concat(parts, ", "))
+	else
+		needLabel:SetText("RAID FULL")
+		needLabel:SetTextColor(C.accent[1], C.accent[2], C.accent[3])
+		needText:SetText("Every slot is filled.")
+	end
+
+	local cache = JohnnysRaidComp.db.global.raidCompGearScores
+	local total, count, lowScore, lowName = 0, 0, nil, nil
+	for _, member in ipairs(roster) do
+		local entry = cache and cache[member.name]
+		local score = entry and tonumber(entry.score)
+		if score then
+			total = total + score
+			count = count + 1
+			if not lowScore or score < lowScore then
+				lowScore, lowName = score, member.name
+			end
+		end
+	end
+	if count > 0 then
+		gsSummaryText:SetText(string.format("AVG GS %d    LOWEST %d %s", math.floor(total / count + 0.5), lowScore, lowName))
+	else
+		gsSummaryText:SetText("")
+	end
+end
+
+-- Footer hint: what the next click will do while something is selected,
+-- otherwise the short how-to.
+local function RefreshHint(template)
+	local C = Skin.C
+	if not selection then
+		hintText:SetText(IDLE_HINT)
+		hintText:SetTextColor(C.dim[1], C.dim[2], C.dim[3])
+		return
+	end
+	hintText:SetTextColor(C.text[1], C.text[2], C.text[3])
+	if selection.kind == "bench" then
+		hintText:SetText("Click a slot to place " .. selection.value .. " there, or click them again to cancel.")
+	else
+		local slot = template.slots[selection.value]
+		local name = slot and currentMatches[slot]
+		if name then
+			hintText:SetText("Click another slot to swap with " .. name .. ", or the same slot to cancel.")
+		else
+			hintText:SetText("Click a filled slot or a benched player to put them here.")
+		end
+	end
+end
+
 ----------------------------------------------------------------------------
--- Refresh - rescans the roster, recomputes matches, and repaints the header
--- counts + every slot card for the currently selected raid+size.
+-- Refresh - rescans the roster, recomputes matches, and repaints the role
+-- sections, bench, need bar and footer for the currently selected raid+size.
 ----------------------------------------------------------------------------
 function RaidCompUI:RefreshComp()
 	if not currentRaid or not currentSize then
@@ -899,6 +1008,9 @@ function RaidCompUI:RefreshComp()
 		classByName[member.name] = member.class
 	end
 
+	-- y walks down compPage as each section is laid out.
+	local y = GRID_TOP
+
 	if template.isClassRun then
 		headerText.tank:Hide()
 		headerText.healer:Hide()
@@ -913,13 +1025,18 @@ function RaidCompUI:RefreshComp()
 				filled = filled + 1
 			end
 		end
-		headerText.classRun:SetText(string.format("Classes represented: %d/%d", filled, #template.slots))
-		if filled >= #template.slots then
-			headerText.classRun:SetTextColor(0.3, 1, 0.3)
-		else
-			headerText.classRun:SetTextColor(1, 0.4, 0.4)
-		end
+		headerText.classRun:SetText(string.format("CLASSES REPRESENTED  %d/%d", filled, #template.slots))
+		local color = (filled >= #template.slots) and Skin.C.accent or Skin.C.short
+		headerText.classRun:SetTextColor(color[1], color[2], color[3])
+		headerText.classRun:ClearAllPoints()
+		headerText.classRun:SetPoint("TOPLEFT", compPage, "TOPLEFT", 0, y - 4)
 		headerText.classRun:Show()
+		y = y - SECTION_HEAD
+
+		for i, slot in ipairs(template.slots) do
+			PlaceCard(i, slot, i, y, matches, classByName, true)
+		end
+		y = y - math.ceil(#template.slots / COLUMNS) * (CARD_HEIGHT + CARD_GAP)
 	else
 		headerText.classRun:Hide()
 		headerText.tank:Show()
@@ -932,62 +1049,80 @@ function RaidCompUI:RefreshComp()
 		SetHeaderCount(headerText.tank, "Tanks", have.TANK, template.needed.TANK)
 		SetHeaderCount(headerText.healer, "Healers", have.HEALER, template.needed.HEALER)
 		SetHeaderCount(headerText.dps, "DPS", have.DAMAGER, template.needed.DAMAGER)
-	end
 
-	for i, slot in ipairs(template.slots) do
-		local card = EnsureSlotCard(i)
-		local col = (i - 1) % COLUMNS
-		local row = math.floor((i - 1) / COLUMNS)
-		card:ClearAllPoints()
-		card:SetPoint("TOPLEFT", compPage, "TOPLEFT", col * (CARD_WIDTH + CARD_GAP), GRID_TOP - row * (CARD_HEIGHT + CARD_GAP))
-		local matchedName = matches[slot]
-		SetCardState(card, slot, matchedName, matchedName and classByName[matchedName], template.isClassRun)
-		card:Show()
+		for _, section in ipairs(SECTIONS) do
+			local header = headerText[section.key]
+			header:ClearAllPoints()
+			header:SetPoint("TOPLEFT", compPage, "TOPLEFT", 0, y - 4)
+			y = y - SECTION_HEAD
+
+			local n = 0
+			for i, slot in ipairs(template.slots) do
+				if slot.role == section.role then
+					n = n + 1
+					PlaceCard(i, slot, n, y, matches, classByName, false)
+				end
+			end
+			if n > 0 then
+				y = y - math.ceil(n / COLUMNS) * (CARD_HEIGHT + CARD_GAP)
+			end
+			y = y - SECTION_GAP
+		end
 	end
 
 	for i = #template.slots + 1, #slotCards do
 		slotCards[i]:Hide()
 	end
 
-	-- Bench - anyone BuildMatches couldn't place, rendered below the grid
-	-- (positioned from the grid's actual row count so it never overlaps,
-	-- regardless of a 10-man's 2 rows vs a 25-man's 5).
-	local rows = math.ceil(#template.slots / COLUMNS)
-	local benchTop = GRID_TOP - rows * (CARD_HEIGHT + CARD_GAP) - 20
-
+	-- Bench - anyone BuildMatches couldn't place, rendered below the last
+	-- section so nobody who didn't fit the template just disappears.
 	if #overflow > 0 then
+		local benchTop = y - 4
 		benchLabel:ClearAllPoints()
 		benchLabel:SetPoint("TOPLEFT", compPage, "TOPLEFT", 0, benchTop)
-		benchLabel:SetText(string.format("Bench (%d unassigned - click a name, then click a slot to place them):", #overflow))
+		benchLabel:SetText(string.format("BENCH  %d", #overflow))
 		benchLabel:Show()
+
+		for i, member in ipairs(overflow) do
+			local chip = EnsureBenchChip(i)
+			local col = (i - 1) % BENCH_COLUMNS
+			local row = math.floor((i - 1) / BENCH_COLUMNS)
+			chip:ClearAllPoints()
+			chip:SetPoint("TOPLEFT", compPage, "TOPLEFT", col * (BENCH_CHIP_WIDTH + BENCH_GAP), benchTop - 20 - row * (BENCH_CHIP_HEIGHT + BENCH_GAP))
+			SetBenchChipState(chip, member.name, member.class)
+			chip:Show()
+		end
+
+		local benchRows = math.ceil(#overflow / BENCH_COLUMNS)
+		y = benchTop - 20 - benchRows * (BENCH_CHIP_HEIGHT + BENCH_GAP)
 	else
 		benchLabel:Hide()
-	end
-
-	for i, member in ipairs(overflow) do
-		local chip = EnsureBenchChip(i)
-		local col = (i - 1) % BENCH_COLUMNS
-		local row = math.floor((i - 1) / BENCH_COLUMNS)
-		chip:ClearAllPoints()
-		chip:SetPoint("TOPLEFT", compPage, "TOPLEFT", col * (BENCH_CHIP_WIDTH + BENCH_GAP), benchTop - 18 - row * (BENCH_CHIP_HEIGHT + BENCH_GAP))
-		SetBenchChipState(chip, member.name, member.class)
-		chip:Show()
 	end
 
 	for i = #overflow + 1, #benchChips do
 		benchChips[i]:Hide()
 	end
 
-	-- Shrink the window to just what the grid (and bench, if any) needs, so a
-	-- 2-row 10-man doesn't sit in a 5-row-tall panel. `rows`/#overflow are the
-	-- same values the bench layout above just used.
-	local contentBelowGridTop = rows * (CARD_HEIGHT + CARD_GAP)
-	if #overflow > 0 then
-		local benchRows = math.ceil(#overflow / BENCH_COLUMNS)
-		contentBelowGridTop = contentBelowGridTop + 20 + 18
-			+ benchRows * BENCH_CHIP_HEIGHT + (benchRows - 1) * BENCH_GAP
+	-- pcall'd like the GearScore reads above - these only decorate the
+	-- window and must never be able to break the grid.
+	pcall(RefreshNeedBar, template, matches, roster)
+	RefreshHint(template)
+
+	local okNames, names = pcall(self.GetUninspectedNames, self)
+	local uninspected = (okNames and names) and #names or 0
+	if uninspected > 0 then
+		reportVHBtn.text:SetText(string.format("Ping %d uninspected to VH", uninspected))
+		reportVHBtn.text:SetTextColor(Skin.C.text[1], Skin.C.text[2], Skin.C.text[3])
+		reportVHBtn:Enable()
+	else
+		reportVHBtn.text:SetText("Everyone inspected")
+		reportVHBtn.text:SetTextColor(Skin.C.dim[1], Skin.C.dim[2], Skin.C.dim[3])
+		reportVHBtn:Disable()
 	end
-	SetFrameHeight(COMP_CHROME_TOP + contentBelowGridTop + COMP_CHROME_BOTTOM)
+
+	-- Window = title strip + top inset + everything laid out above + the
+	-- footer button strip + bottom margin.
+	SetFrameHeight(Skin.HEADER_HEIGHT + PAGE_TOP_INSET + (-y) + 8 + FOOTER_HEIGHT + PAGE_BOTTOM_INSET)
 end
 
 ----------------------------------------------------------------------------
@@ -1076,76 +1211,88 @@ local function ToggleClassPins()
 end
 
 ----------------------------------------------------------------------------
--- Page switching
+-- Raid / size selection - one screen: the raid rail on the left and the size
+-- toggles across the top are always visible, so changing either is a single
+-- click (there are no separate picker pages or Back buttons any more).
 ----------------------------------------------------------------------------
-local function HideAllPages()
-	raidListPage:Hide()
-	sizeListPage:Hide()
-	compPage:Hide()
+local raidButtons = {}
+
+-- Lime border + lighter fill for the active size toggle.
+local function SetToggleSelected(btn, selected)
+	local C = Skin.C
+	if selected then
+		btn:SetBackdropColor(0.122, 0.153, 0.169, 0.95)
+		btn:SetBackdropBorderColor(C.accent[1], C.accent[2], C.accent[3], 1)
+		btn.text:SetTextColor(C.text[1], C.text[2], C.text[3])
+	else
+		btn:SetBackdropColor(C.panel[1], C.panel[2], C.panel[3], 0.95)
+		btn:SetBackdropBorderColor(C.rule2[1], C.rule2[2], C.rule2[3], 1)
+		btn.text:SetTextColor(C.muted[1], C.muted[2], C.muted[3])
+	end
 end
 
-local function ShowRaidList()
-	currentRaid, currentSize = nil, nil
-	HideAllPages()
-	raidListPage:Show()
-	-- Raid-button grid under the page's -76 top inset, then a bottom margin.
-	local raidRows = math.ceil(#RaidCompUI.RAID_ORDER / RAID_COLS)
-	SetFrameHeight(76 + 20 + raidRows * (RAID_BUTTON_HEIGHT + RAID_GAP) + 16)
-	mainFrame.title:SetText("Raid Comp - Select a Raid")
-end
-
-local function ShowSizeList(raidKey)
-	currentRaid = raidKey
-	currentSize = nil
+-- Repaints the rail highlight and rebuilds the size toggles for currentRaid.
+local function RefreshSelectors()
+	local C = Skin.C
+	for raidKey, btn in pairs(raidButtons) do
+		if raidKey == currentRaid then
+			btn.bg:Show()
+			btn.bar:Show()
+			btn.num:SetTextColor(C.accent[1], C.accent[2], C.accent[3])
+			btn.text:SetTextColor(C.text[1], C.text[2], C.text[3])
+		else
+			btn.bg:Hide()
+			btn.bar:Hide()
+			btn.num:SetTextColor(C.dim[1], C.dim[2], C.dim[3])
+			btn.text:SetTextColor(C.muted[1], C.muted[2], C.muted[3])
+		end
+	end
 
 	for _, btn in ipairs(sizeListButtons) do
 		btn:Hide()
 	end
-	local sizes = RaidCompUI.RAID_SIZE_ORDER[raidKey]
-	local totalWidth = #sizes * SIZE_BUTTON_WIDTH + (#sizes - 1) * SIZE_GAP
-	local startX = (FRAME_WIDTH - 32 - totalWidth) / 2
+	local raidKey = currentRaid
+	local sizes = RaidCompUI.RAID_SIZE_ORDER[raidKey] or {}
+	local x = 0
 	for i, sizeKey in ipairs(sizes) do
 		local btn = sizeListButtons[i]
 		if not btn then
-			btn = Skin:CreateButton(sizeListPage, SIZE_BUTTON_WIDTH, SIZE_BUTTON_HEIGHT, "")
+			btn = Skin:CreateButton(compPage, SIZE_BUTTON_WIDTH, SIZE_BUTTON_HEIGHT, "")
 			sizeListButtons[i] = btn
 		end
 		btn.text:SetText(RaidCompUI.SIZE_LABELS[sizeKey])
 		btn:ClearAllPoints()
-		btn:SetPoint("TOPLEFT", sizeListPage, "TOPLEFT", startX + (i - 1) * (SIZE_BUTTON_WIDTH + SIZE_GAP), -60)
+		btn:SetPoint("TOPLEFT", compPage, "TOPLEFT", x, 0)
 		btn:SetScript("OnClick", function() RaidCompUI:ShowComp(raidKey, sizeKey) end)
+		-- StyleButton's own OnMouseUp repaints the idle fill, so re-apply the
+		-- selected look after it.
+		btn:SetScript("OnMouseUp", function(self) SetToggleSelected(self, sizeKey == currentSize) end)
+		SetToggleSelected(btn, sizeKey == currentSize)
 		btn:Show()
+		x = x + SIZE_BUTTON_WIDTH + SIZE_GAP
 	end
 
 	if RaidCompUI.CLASS_RUN_RAIDS[raidKey] then
 		classRunEntryButton:ClearAllPoints()
-		classRunEntryButton:SetPoint("TOP", sizeListPage, "TOP", 0, -110)
-		classRunEntryButton:Show()
+		classRunEntryButton:SetPoint("TOPLEFT", compPage, "TOPLEFT", x, 0)
 		classRunEntryButton:SetScript("OnClick", function() RaidCompUI:ShowClassRunComp(raidKey) end)
+		classRunEntryButton:SetScript("OnMouseUp", function(self) SetToggleSelected(self, currentSize == "CLASSRUN") end)
+		SetToggleSelected(classRunEntryButton, currentSize == "CLASSRUN")
+		classRunEntryButton:Show()
 	else
 		classRunEntryButton:Hide()
 	end
-
-	HideAllPages()
-	sizeListPage:Show()
-	-- Size buttons at -60, plus the Class Run button at -110 when this raid
-	-- has one; page top inset is -44.
-	local sizeContent = RaidCompUI.CLASS_RUN_RAIDS[raidKey] and 136 or 88
-	SetFrameHeight(44 + sizeContent + 16)
-	mainFrame.title:SetText(RaidCompUI.RAID_LABELS[raidKey] .. " - Select Size")
 end
 
 function RaidCompUI:ShowComp(raidKey, sizeKey)
 	currentRaid, currentSize = raidKey, sizeKey
 	JohnnysRaidComp.db.profile.raidCompSelectedRaid = raidKey
 	JohnnysRaidComp.db.profile.raidCompSelectedSize = sizeKey
-	compBackAction = function() ShowSizeList(raidKey) end
 	ClearSelection()
 	self:RebuildTemplate(raidKey, sizeKey)
 
-	HideAllPages()
-	compPage:Show()
-	mainFrame.title:SetText(RaidCompUI.RAID_LABELS[raidKey] .. " - " .. RaidCompUI.SIZE_LABELS[sizeKey])
+	mainFrame.title:SetText(string.upper(RaidCompUI.RAID_LABELS[raidKey] .. "  /  " .. RaidCompUI.SIZE_LABELS[sizeKey]))
+	RefreshSelectors()
 	self:RefreshComp()
 end
 
@@ -1167,13 +1314,36 @@ function RaidCompUI:ShowClassRunComp(raidKey)
 	-- raid+size pick.
 	JohnnysRaidComp.db.profile.raidCompSelectedRaid = raidKey
 	JohnnysRaidComp.db.profile.raidCompSelectedSize = "CLASSRUN"
-	compBackAction = function() ShowSizeList(raidKey) end
 	ClearSelection()
 
-	HideAllPages()
-	compPage:Show()
-	mainFrame.title:SetText(RaidCompUI.RAID_LABELS[raidKey] .. " - Class Run (one of each class)")
+	mainFrame.title:SetText(string.upper(RaidCompUI.RAID_LABELS[raidKey]) .. "  /  CLASS RUN (ONE OF EACH CLASS)")
+	RefreshSelectors()
 	self:RefreshComp()
+end
+
+-- Rail click: switch raid but keep the size you were on where the new raid
+-- has it (25-Man Heroic falls back to 25-Man on raids with no heroic mode).
+local function SelectRaid(raidKey)
+	local size = currentSize
+	if size == "CLASSRUN" and RaidCompUI.CLASS_RUN_RAIDS[raidKey] then
+		RaidCompUI:ShowClassRunComp(raidKey)
+		return
+	end
+
+	local sizes = RaidCompUI.RAID_SIZE_ORDER[raidKey]
+	local function Has(key)
+		for _, sizeKey in ipairs(sizes) do
+			if sizeKey == key then
+				return true
+			end
+		end
+		return false
+	end
+	if not size or not Has(size) then
+		local plain = size and (string.gsub(size, "H$", ""))
+		size = (plain and Has(plain)) and plain or sizes[1]
+	end
+	RaidCompUI:ShowComp(raidKey, size)
 end
 
 ----------------------------------------------------------------------------
@@ -1185,120 +1355,185 @@ local function SavePosition()
 	pos.point, pos.relativePoint, pos.x, pos.y = point, relativePoint, x, y
 end
 
-local function BuildRaidListPage()
-	raidListPage = CreateFrame("Frame", nil, mainFrame)
-	raidListPage:SetPoint("TOPLEFT", 16, -76)
-	raidListPage:SetPoint("BOTTOMRIGHT", -16, 16)
+-- Turns a Skin button into the one filled lime "main action" of a view.
+local function MakePrimary(btn)
+	local C = Skin.C
+	local function Idle()
+		btn:SetBackdropColor(C.accent[1], C.accent[2], C.accent[3], 1)
+	end
+	btn:SetBackdropBorderColor(C.accent[1], C.accent[2], C.accent[3], 1)
+	btn.text:SetTextColor(C.ground[1], C.ground[2], C.ground[3])
+	btn:SetScript("OnMouseDown", function()
+		btn:SetBackdropColor(0.580, 0.710, 0.230, 1)
+	end)
+	btn:SetScript("OnMouseUp", Idle)
+	Idle()
+end
+
+-- Left rail: one numbered row per raid, lime bar + number on the active one.
+local function BuildRail()
+	local C = Skin.C
+	local rail = CreateFrame("Frame", nil, mainFrame)
+	rail:SetPoint("TOPLEFT", 1, -(Skin.HEADER_HEIGHT + 1))
+	rail:SetPoint("BOTTOMLEFT", 1, 1)
+	rail:SetWidth(RAIL_WIDTH)
+
+	local bg = Skin:Solid(rail, "BACKGROUND", C.panel)
+	bg:SetAllPoints()
+
+	local divider = Skin:Solid(rail, "BORDER", C.rule)
+	divider:SetPoint("TOPRIGHT", rail, "TOPRIGHT", 0, 0)
+	divider:SetPoint("BOTTOMRIGHT", rail, "BOTTOMRIGHT", 0, 0)
+	divider:SetWidth(1)
+
+	local heading = Skin:Heading(rail, 10, C.muted)
+	heading:SetPoint("TOPLEFT", 12, -10)
+	heading:SetText("RAIDS")
 
 	for i, raidKey in ipairs(RaidCompUI.RAID_ORDER) do
-		local col = (i - 1) % RAID_COLS
-		local row = math.floor((i - 1) / RAID_COLS)
-		local btn = Skin:CreateButton(raidListPage, RAID_BUTTON_WIDTH, RAID_BUTTON_HEIGHT, RaidCompUI.RAID_LABELS[raidKey])
-		btn:SetPoint("TOPLEFT", col * (RAID_BUTTON_WIDTH + RAID_GAP), -20 - row * (RAID_BUTTON_HEIGHT + RAID_GAP))
-		btn:SetScript("OnClick", function() ShowSizeList(raidKey) end)
+		local btn = CreateFrame("Button", nil, rail)
+		btn:SetSize(RAIL_WIDTH - 1, RAIL_ROW_HEIGHT)
+		btn:SetPoint("TOPLEFT", 0, -RAIL_TOP - (i - 1) * RAIL_ROW_HEIGHT)
+
+		btn.bg = btn:CreateTexture(nil, "BORDER")
+		btn.bg:SetAllPoints()
+		btn.bg:SetTexture(Skin.WHITE)
+		btn.bg:SetVertexColor(0.122, 0.153, 0.169, 1)
+		btn.bg:Hide()
+
+		local hl = btn:CreateTexture(nil, "HIGHLIGHT")
+		hl:SetAllPoints()
+		hl:SetTexture(Skin.WHITE)
+		hl:SetVertexColor(C.accent[1], C.accent[2], C.accent[3], 0.10)
+
+		btn.bar = Skin:Solid(btn, "ARTWORK", C.accent)
+		btn.bar:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
+		btn.bar:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", 0, 0)
+		btn.bar:SetWidth(2)
+		btn.bar:Hide()
+
+		btn.num = Skin:Heading(btn, 14, C.dim)
+		btn.num:SetPoint("LEFT", btn, "LEFT", 12, 0)
+		btn.num:SetText(string.format("%02d", i))
+
+		btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		btn.text:SetPoint("LEFT", btn, "LEFT", 36, 0)
+		btn.text:SetPoint("RIGHT", btn, "RIGHT", -6, 0)
+		btn.text:SetJustifyH("LEFT")
+		btn.text:SetText(RaidCompUI.RAID_LABELS[raidKey])
+
+		btn:SetScript("OnClick", function() SelectRaid(raidKey) end)
+		raidButtons[raidKey] = btn
 	end
 end
 
-local function BuildSizeListPage()
-	sizeListPage = CreateFrame("Frame", nil, mainFrame)
-	sizeListPage:SetPoint("TOPLEFT", 16, -44)
-	sizeListPage:SetPoint("BOTTOMRIGHT", -16, 16)
-	sizeListPage:Hide()
-
-	local back = Skin:CreateButton(sizeListPage, 60, 22, "< Back")
-	back:SetPoint("TOPLEFT", 0, 0)
-	back:SetScript("OnClick", ShowRaidList)
-
-	classRunEntryButton = Skin:CreateButton(sizeListPage, 200, 26, "Class Run >")
-	classRunEntryButton:Hide()
-end
-
 local function BuildCompPage()
+	local C = Skin.C
 	compPage = CreateFrame("Frame", nil, mainFrame)
-	compPage:SetPoint("TOPLEFT", 16, -44)
-	compPage:SetPoint("BOTTOMRIGHT", -16, 16)
-	compPage:Hide()
+	compPage:SetPoint("TOPLEFT", RAIL_WIDTH + 12, -(Skin.HEADER_HEIGHT + PAGE_TOP_INSET))
+	compPage:SetPoint("BOTTOMRIGHT", -12, PAGE_BOTTOM_INSET)
 
-	local back = Skin:CreateButton(compPage, 60, 22, "< Back")
-	back:SetPoint("TOPLEFT", 0, 0)
-	back:SetScript("OnClick", function()
-		if compBackAction then
-			compBackAction()
+	-- Top row: size toggles on the left (pooled, see RefreshSelectors) and the
+	-- template options on the right.
+	classRunEntryButton = Skin:CreateButton(compPage, 90, SIZE_BUTTON_HEIGHT, "Class Run")
+	classRunEntryButton:Hide()
+
+	countControls.reset = Skin:CreateButton(compPage, 60, SIZE_BUTTON_HEIGHT, "Reset")
+	countControls.reset:SetPoint("TOPRIGHT", compPage, "TOPRIGHT", 0, 0)
+	countControls.reset:SetScript("OnClick", function() ResetCounts() end)
+
+	-- Lives in countControls so Class Run hides it along with the +/- (see
+	-- RefreshComp) - a Class Run is nothing but class slots.
+	countControls.classPins = Skin:CreateButton(compPage, 110, SIZE_BUTTON_HEIGHT,
+		JohnnysRaidComp.db.profile.raidCompClassPins and "Class slots: On" or "Class slots: Off")
+	countControls.classPins:SetPoint("RIGHT", countControls.reset, "LEFT", -6, 0)
+	countControls.classPins:SetScript("OnClick", ToggleClassPins)
+
+	-- Need bar: what's still missing, the roster's GearScore summary, and a
+	-- shortcut to the Raid Spammer (whose {need} token reads this same comp).
+	local needBar = CreateFrame("Frame", nil, compPage)
+	needBar:SetPoint("TOPLEFT", compPage, "TOPLEFT", 0, -NEED_BAR_TOP)
+	needBar:SetPoint("TOPRIGHT", compPage, "TOPRIGHT", 0, -NEED_BAR_TOP)
+	needBar:SetHeight(24)
+	Skin:StylePanel(needBar, 1)
+	needBar:SetBackdropColor(C.panel[1], C.panel[2], C.panel[3], 1)
+
+	needLabel = Skin:Heading(needBar, 12, C.short)
+	needLabel:SetPoint("LEFT", needBar, "LEFT", 8, 0)
+
+	needText = needBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	needText:SetPoint("LEFT", needLabel, "RIGHT", 8, 0)
+	needText:SetTextColor(C.text[1], C.text[2], C.text[3])
+
+	local lfmBtn = Skin:CreateButton(needBar, 84, 18, "Open LFM")
+	lfmBtn:SetPoint("RIGHT", needBar, "RIGHT", -3, 0)
+	lfmBtn:SetScript("OnClick", function()
+		local spamFrame = _G["JohnnysAddonHubRaidSpamFrame"]
+		if spamFrame and spamFrame:IsShown() then
+			return
+		end
+		if JohnnysRaidSpam and JohnnysRaidSpam.RaidSpamUI then
+			JohnnysRaidSpam.RaidSpamUI:Toggle()
 		end
 	end)
+	MakePrimary(lfmBtn)
 
-	headerText.tank = compPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	headerText.tank:SetPoint("TOPLEFT", 90, -4)
+	gsSummaryText = Skin:Heading(needBar, 11, C.muted)
+	gsSummaryText:SetPoint("RIGHT", lfmBtn, "LEFT", -10, 0)
 
-	-- Each anchored off the previous element's right edge (rather than fixed
-	-- x coordinates) so the Tank/Healer +/- pairs have room without the
-	-- columns overlapping regardless of how wide "Tanks: 10/10" ends up.
+	-- Section headings. Positioned each refresh (see RefreshComp); the +/-
+	-- pairs hang off their heading's right edge so they follow it.
+	headerText.tank = Skin:Heading(compPage, 13)
 	countControls.tankMinus = Skin:CreateButton(compPage, 18, 18, "-")
-	countControls.tankMinus:SetPoint("LEFT", headerText.tank, "RIGHT", 8, 0)
+	countControls.tankMinus:SetPoint("LEFT", headerText.tank, "RIGHT", 10, 0)
 	countControls.tankMinus:SetScript("OnClick", function() AdjustCount("TANK", -1) end)
-
 	countControls.tankPlus = Skin:CreateButton(compPage, 18, 18, "+")
 	countControls.tankPlus:SetPoint("LEFT", countControls.tankMinus, "RIGHT", 2, 0)
 	countControls.tankPlus:SetScript("OnClick", function() AdjustCount("TANK", 1) end)
 
-	headerText.healer = compPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	headerText.healer:SetPoint("LEFT", countControls.tankPlus, "RIGHT", 24, 0)
-
+	headerText.healer = Skin:Heading(compPage, 13)
 	countControls.healerMinus = Skin:CreateButton(compPage, 18, 18, "-")
-	countControls.healerMinus:SetPoint("LEFT", headerText.healer, "RIGHT", 8, 0)
+	countControls.healerMinus:SetPoint("LEFT", headerText.healer, "RIGHT", 10, 0)
 	countControls.healerMinus:SetScript("OnClick", function() AdjustCount("HEALER", -1) end)
-
 	countControls.healerPlus = Skin:CreateButton(compPage, 18, 18, "+")
 	countControls.healerPlus:SetPoint("LEFT", countControls.healerMinus, "RIGHT", 2, 0)
 	countControls.healerPlus:SetScript("OnClick", function() AdjustCount("HEALER", 1) end)
 
 	-- DPS has no +/- of its own - it's always the remainder after
 	-- Tanks/Healers are set (see AdjustCount), so there's nothing to click.
-	headerText.dps = compPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	headerText.dps:SetPoint("LEFT", countControls.healerPlus, "RIGHT", 24, 0)
+	headerText.dps = Skin:Heading(compPage, 13)
 
-	countControls.reset = Skin:CreateButton(compPage, 60, 20, "Reset")
-	countControls.reset:SetPoint("TOPRIGHT", compPage, "TOPRIGHT", 0, -2)
-	countControls.reset:SetScript("OnClick", function() ResetCounts() end)
-
-	-- Lives in countControls so Class Run hides it along with the +/- (see
-	-- RefreshComp) - a Class Run is nothing but class slots.
-	countControls.classPins = Skin:CreateButton(compPage, 110, 20,
-		JohnnysRaidComp.db.profile.raidCompClassPins and "Class slots: On" or "Class slots: Off")
-	countControls.classPins:SetPoint("RIGHT", countControls.reset, "LEFT", -6, 0)
-	countControls.classPins:SetScript("OnClick", ToggleClassPins)
-
-	-- Class Run's single "Classes represented: X/10" line, shown instead of
-	-- the tank/healer/dps trio above (see RefreshComp).
-	headerText.classRun = compPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	headerText.classRun:SetPoint("TOPLEFT", 90, -4)
+	-- Class Run's single "CLASSES REPRESENTED X/10" heading, shown instead of
+	-- the three role headings (see RefreshComp).
+	headerText.classRun = Skin:Heading(compPage, 13)
 	headerText.classRun:Hide()
 
-	local hint = compPage:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	hint:SetPoint("TOPLEFT", 90, -22)
-	hint:SetText("Click a slot, then click another to swap. Right-click a slot to undo its swap. Ctrl+click a box to re-scan its GearScore.")
-
 	-- Positioned dynamically each refresh (see RefreshComp) since it sits
-	-- right below the grid, whose height depends on the template's size.
-	benchLabel = compPage:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	-- right below the last section.
+	benchLabel = Skin:Heading(compPage, 13, C.muted)
 	benchLabel:Hide()
 
 	-- Fixed bottom strip - pings roster members not yet GearScore-inspected
 	-- (normally those out of inspect range) to report to Violet Hold. See
-	-- RaidCompUI:AnnounceUninspected.
-	local reportVHBtn = Skin:CreateButton(compPage, 240, 22, "Report uninspected to VH")
-	reportVHBtn:SetPoint("BOTTOMLEFT", compPage, "BOTTOMLEFT", 0, 8)
+	-- RaidCompUI:AnnounceUninspected. Label/enabled state set in RefreshComp.
+	reportVHBtn = Skin:CreateButton(compPage, 190, FOOTER_HEIGHT, "Ping uninspected to VH")
+	reportVHBtn:SetPoint("BOTTOMLEFT", compPage, "BOTTOMLEFT", 0, 0)
 	reportVHBtn:SetScript("OnClick", function() RaidCompUI:AnnounceUninspected() end)
 
 	-- Force a fresh GearScore sweep of the whole roster in place - see
-	-- RaidCompUI:RescanAllGearScores. Saves closing/reopening the window, which
-	-- only picks up uncached/stale members anyway.
-	local rescanAllBtn = Skin:CreateButton(compPage, 130, 22, "Re-scan all GS")
-	rescanAllBtn:SetPoint("LEFT", reportVHBtn, "RIGHT", 8, 0)
+	-- RaidCompUI:RescanAllGearScores.
+	local rescanAllBtn = Skin:CreateButton(compPage, 110, FOOTER_HEIGHT, "Re-scan all GS")
+	rescanAllBtn:SetPoint("LEFT", reportVHBtn, "RIGHT", 6, 0)
 	rescanAllBtn:SetScript("OnClick", function() RaidCompUI:RescanAllGearScores() end)
 
 	reportVHStatus = compPage:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 	reportVHStatus:SetPoint("LEFT", rescanAllBtn, "RIGHT", 8, 0)
+
+	hintText = compPage:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	hintText:SetPoint("BOTTOMRIGHT", compPage, "BOTTOMRIGHT", 0, 5)
+	hintText:SetWidth(360)
+	hintText:SetJustifyH("RIGHT")
+	hintText:SetText(IDLE_HINT)
 end
 
 local function BuildFrame()
@@ -1320,9 +1555,12 @@ local function BuildFrame()
 	Skin:StylePanel(mainFrame, 0.95)
 	mainFrame:Hide()
 
-	mainFrame.title = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
-	mainFrame.title:SetPoint("TOP", 0, -16)
-	mainFrame.title:SetText("Raid Comp")
+	-- Title strip: "RAID COMP" then a muted breadcrumb for the current
+	-- selection ("ICECROWN CITADEL  /  25-MAN HEROIC"), set by ShowComp /
+	-- ShowClassRunComp through mainFrame.title:SetText.
+	local titleText = Skin:AddHeader(mainFrame, "Raid Comp")
+	mainFrame.title = Skin:Heading(mainFrame, 12, Skin.C.muted)
+	mainFrame.title:SetPoint("BOTTOMLEFT", titleText, "BOTTOMRIGHT", 10, 1)
 
 	local close = Skin:CreateButton(mainFrame, 20, 20, "X")
 	close:SetPoint("TOPRIGHT", -4, -4)
@@ -1351,12 +1589,15 @@ local function BuildFrame()
 		JohnnysRaidComp.WindowSettings:Register(mainFrame, "raidcomp", "Raid Comp")
 	end
 
-	-- "Update available" line in the top-left corner, hidden unless a newer
-	-- version has been seen (see Modules\VersionCheck.lua).
-	JohnnysRaidComp.VersionCheck:AttachNotice(mainFrame)
+	-- "Update available" notice, hidden unless a newer version has been seen
+	-- (see Modules\VersionCheck.lua). It anchors itself to its host's top-left
+	-- corner, which the title occupies, so give it a host left of Cfg instead.
+	local noticeHost = CreateFrame("Frame", nil, mainFrame)
+	noticeHost:SetSize(210, Skin.HEADER_HEIGHT)
+	noticeHost:SetPoint("TOPRIGHT", cfg, "TOPLEFT", -4, 6)
+	JohnnysRaidComp.VersionCheck:AttachNotice(noticeHost)
 
-	BuildRaidListPage()
-	BuildSizeListPage()
+	BuildRail()
 	BuildCompPage()
 
 	mainFrame:SetScript("OnShow", function()
@@ -1364,14 +1605,15 @@ local function BuildFrame()
 		local lastSize = JohnnysRaidComp.db.profile.raidCompSelectedSize
 		-- Class Run's template is only ever built lazily inside
 		-- ShowClassRunComp itself, so it won't exist yet on a fresh session -
-		-- route there directly instead of the TEMPLATES-lookup check below
-		-- (which would otherwise fail and fall back to the raid list).
+		-- route there directly instead of the TEMPLATES-lookup check below.
 		if lastRaid and lastSize == "CLASSRUN" and RaidCompUI.CLASS_RUN_RAIDS[lastRaid] then
 			RaidCompUI:ShowClassRunComp(lastRaid)
 		elseif lastRaid and lastSize and RaidCompUI.TEMPLATES[lastRaid .. "_" .. lastSize] then
 			RaidCompUI:ShowComp(lastRaid, lastSize)
 		else
-			ShowRaidList()
+			-- Nothing picked yet: open on the first raid at its first size.
+			local firstRaid = RaidCompUI.RAID_ORDER[1]
+			RaidCompUI:ShowComp(firstRaid, RaidCompUI.RAID_SIZE_ORDER[firstRaid][1])
 		end
 	end)
 end
