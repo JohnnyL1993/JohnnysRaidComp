@@ -2,6 +2,12 @@
 
 A World of Warcraft 3.3.5a addon for the Warmane private server. It gives you ideal-comp templates for each raid and size, matches them against your live roster, and supports manual slot assignments, class-run tank/healer picks, and GearScore and blacklist lookups. It also includes a Raid Spammer, an LFM chat timer that posts to any ticked channels (General, Trade, LookingForGroup, Yell), each on its own interval.
 
+## Screenshots
+
+![Raid Comp](screenshots/raidcomp.png)
+
+![Raid Comp with the Raid Spammer docked](screenshots/raidcomp_spammer.png)
+
 ## Install
 
 1. Go to [Releases](https://github.com/JohnnyL1993/JohnnysRaidComp/releases) and download **`JohnnysRaidComp-vX.Y.zip`** from the latest release.
