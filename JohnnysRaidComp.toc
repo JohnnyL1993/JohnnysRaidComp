@@ -2,7 +2,7 @@
 ## Title: Johnny's Raid Comp
 ## Notes: Ideal-comp templates per raid/size with live roster matching, manual slot assignments, class-run tank/healer picks, GearScore/blacklist lookups, and a built-in Raid Spammer (multi-channel LFM chat timer) opened from the panel.
 ## Author: Johnny
-## Version: 1.6
+## Version: 1.7
 ## SavedVariables: JohnnysRaidCompDB, JohnnysRaidSpamDB
 ## OptionalDeps: JohnnysGearAdvisor, JohnnysBlackList, JohnnysRaidBrowser
 
@@ -15,6 +15,7 @@ Core.lua
 Modules\Skin.lua
 Modules\GearScore.lua
 Modules\WindowSettings.lua
+Modules\Changelog.lua
 Modules\Launcher.lua
 Modules\VersionCheck.lua
 
@@ -23,4 +24,5 @@ Modules\RaidCompUI\UI.lua
 Modules\RaidCompUI\Init.lua
 
 Modules\RaidSpam\Core.lua
+Modules\RaidSpamUI\LootData.lua
 Modules\RaidSpamUI\Init.lua

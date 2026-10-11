@@ -30,6 +30,41 @@ local byKey = {}
 -- { {key=, label=, get=, set=, row=}, ... }. See WS:RegisterOption.
 local options = {}
 local optionsHeader
+local changelogBtn
+local reportBtn
+
+-- The game can't open a web page, so "Report a bug / request a change" shows
+-- the GitHub issues address in a box, already selected, ready for Ctrl+C.
+local ISSUES_URL = "https://github.com/JohnnyL1993/JohnnysRaidComp/issues"
+
+StaticPopupDialogs["JOHNNYS_RAIDCOMP_ISSUES"] = {
+	text = "Report a bug or request a change on GitHub.\nCtrl+C copies the address below.",
+	button1 = "Close",
+	hasEditBox = 1,
+	hasWideEditBox = 1,
+	OnShow = function(self)
+		local box = self.wideEditBox or self.editBox
+		box:SetText(ISSUES_URL)
+		box:SetFocus()
+		box:HighlightText()
+	end,
+	-- Keep the address intact (and selected) if it gets typed over.
+	EditBoxOnTextChanged = function(self)
+		if self:GetText() ~= ISSUES_URL then
+			self:SetText(ISSUES_URL)
+			self:HighlightText()
+		end
+	end,
+	EditBoxOnEnterPressed = function(self)
+		self:GetParent():Hide()
+	end,
+	EditBoxOnEscapePressed = function(self)
+		self:GetParent():Hide()
+	end,
+	timeout = 0,
+	whileDead = 1,
+	hideOnEscape = 1,
+}
 local Relayout
 
 -- Persistent per-window store, shape: { [key] = { scale=, opacity= }, __panel = {...} }
@@ -218,6 +253,32 @@ Relayout = function()
 		end
 		y = y - GROUP_GAP
 	end
+
+	-- Opens the changelog window (Modules\Changelog.lua); marked while it has
+	-- entries from an update you haven't looked at yet.
+	if NS.Changelog then
+		if not changelogBtn then
+			changelogBtn = Skin:CreateButton(panel, PANEL_W - PAD * 2, 22, "Changelog")
+			changelogBtn:SetScript("OnClick", function()
+				NS.Changelog:Toggle()
+				changelogBtn.text:SetText("Changelog")
+			end)
+		end
+		changelogBtn:ClearAllPoints()
+		changelogBtn:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD, y)
+		changelogBtn.text:SetText(NS.Changelog:HasUnseen() and "Changelog  |cffffd966(new)|r" or "Changelog")
+		y = y - (22 + 6)
+	end
+
+	if not reportBtn then
+		reportBtn = Skin:CreateButton(panel, PANEL_W - PAD * 2, 22, "Report a bug / request")
+		reportBtn:SetScript("OnClick", function()
+			StaticPopup_Show("JOHNNYS_RAIDCOMP_ISSUES")
+		end)
+	end
+	reportBtn:ClearAllPoints()
+	reportBtn:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD, y)
+	y = y - (22 + GROUP_GAP)
 
 	panel:SetHeight(-y + 12)
 end

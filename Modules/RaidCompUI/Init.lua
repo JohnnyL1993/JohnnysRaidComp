@@ -18,10 +18,49 @@ debounceTicker:SetScript("OnUpdate", function(self, elapsed)
 	end
 end)
 
+-- Hand-made slot placements belong to the group they were made in: they're
+-- forgotten when the group ends, and at login if you're no longer in one
+-- (see RaidCompUI:ClearManualAssignments). The login check waits a few
+-- seconds, since group data isn't there yet when the world first loads.
+local LOGIN_CHECK_DELAY = 10
+local wasGrouped = false
+
+local function IsGrouped()
+	return GetNumRaidMembers() > 0 or GetNumPartyMembers() > 0
+end
+
+local loginCheck = CreateFrame("Frame")
+loginCheck:Hide()
+local loginElapsed = 0
+loginCheck:SetScript("OnUpdate", function(self, elapsed)
+	loginElapsed = loginElapsed + elapsed
+	if loginElapsed >= LOGIN_CHECK_DELAY then
+		self:Hide()
+		wasGrouped = IsGrouped()
+		if not wasGrouped then
+			RaidCompUI:ClearManualAssignments()
+		end
+	end
+end)
+
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("RAID_ROSTER_UPDATE")
 eventFrame:RegisterEvent("PARTY_MEMBERS_CHANGED")
-eventFrame:SetScript("OnEvent", function()
+eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+eventFrame:SetScript("OnEvent", function(self, event)
+	if event == "PLAYER_ENTERING_WORLD" then
+		-- Fires on every loading screen; only the first one is the login.
+		self:UnregisterEvent("PLAYER_ENTERING_WORLD")
+		loginCheck:Show()
+		return
+	end
+
+	local grouped = IsGrouped()
+	if wasGrouped and not grouped then
+		RaidCompUI:ClearManualAssignments()
+	end
+	wasGrouped = grouped
+
 	if not RaidCompUI:IsShowingComp() then
 		return
 	end

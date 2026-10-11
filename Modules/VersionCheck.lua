@@ -319,7 +319,21 @@ ChatFrame_AddMessageEventFilter("CHAT_MSG_CHANNEL_NOTICE_USER", ChannelNoticeFil
 ----------------------------------------------------------------------------
 -- Channel join
 ----------------------------------------------------------------------------
+-- A new channel takes the lowest free number, so joining before the game has
+-- put you in General/Trade makes ours channel 1 and pushes those down a
+-- slot. Wait until at least one other channel is there, re-checking every
+-- few seconds; after JOIN_MAX_WAITS tries join anyway (someone who has left
+-- every channel on purpose has nothing to renumber).
+local JOIN_RECHECK = 5
+local JOIN_MAX_WAITS = 12
+local joinWaits = 0
+
 local function JoinVersionChannel()
+	if GetChannelName(CHANNEL) == 0 and select("#", GetChannelList()) == 0 and joinWaits < JOIN_MAX_WAITS then
+		joinWaits = joinWaits + 1
+		After(JOIN_RECHECK, JoinVersionChannel)
+		return
+	end
 	if GetChannelName(CHANNEL) == 0 then
 		JoinTemporaryChannel(CHANNEL)
 	end

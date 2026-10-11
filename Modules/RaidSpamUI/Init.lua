@@ -24,7 +24,10 @@ end
 
 -- Height without any channel rows; each row adds CHANNEL_ROW_H (see
 -- RefreshChannelRows), so a long joined-channel list never clips.
-local FRAME_WIDTH, BASE_HEIGHT = 480, 396
+-- OPTIONS_EXTRA is the Run type / Reserved block between the GS box and the
+-- Channels list (see BuildRunOptions).
+local OPTIONS_EXTRA = 134
+local FRAME_WIDTH, BASE_HEIGHT = 480, 396 + OPTIONS_EXTRA
 local MIN_INTERVAL = 30
 local DEFAULT_INTERVAL = 90
 -- Minimum gap between any two sends, so starting with several channels ticked
@@ -39,7 +42,8 @@ local FIELD_WIDTH = FRAME_WIDTH - 44
 -- Narrower than FIELD_WIDTH so the "Reset" button fits to the right of it.
 local TEMPLATE_BOX_WIDTH = FIELD_WIDTH - 70
 
-local DEFAULT_RECRUIT_TEMPLATE = "[LFM] {raid} ({size}) - GS {gs}+ required - Need: {need} - {quest} - whisper me!"
+local OLD_RECRUIT_TEMPLATE = "[LFM] {raid} ({size}) - GS {gs}+ required - Need: {need} - {quest} - whisper me!"
+local DEFAULT_RECRUIT_TEMPLATE = "[LFM] {raid} ({size}) {type} - GS {gs}+ required - Need: {need} - {reserve} - {quest} - whisper me!"
 
 local mainFrame
 
@@ -207,6 +211,11 @@ local function GetWeeklyQuestLink()
 	return wantName
 end
 
+-- What {need} reads once every slot is filled.
+local NEED_FULL = "Full!"
+-- Chat messages cap at 255 characters.
+local MAX_MESSAGE_LEN = 255
+
 -- Tallies which slots in the current Raid Comp template are still unfilled -
 -- generic role shortfalls ("2 Healer") first, then any unfilled pinned/class
 -- slot labels ("Enh. Shaman (Bloodlust)") by name.
@@ -263,9 +272,208 @@ local function ComputeNeedText(templateKey)
 	end
 
 	if #parts == 0 then
-		return "Full!"
+		return NEED_FULL
 	end
 	return table.concat(parts, ", ")
+end
+
+----------------------------------------------------------------------------
+-- Run type and reserves - tick boxes under the GS box (see BuildRunOptions)
+-- feeding the {type} and {reserve} tokens.
+----------------------------------------------------------------------------
+local RUN_TYPES = {
+	{ key = "mount", label = "Mount Run", short = "Mount" },
+	{ key = "eof", label = "EoF Run", short = "EoF" },
+	{ key = "ach", label = "Achievement Run", short = "Achievement" },
+	{ key = "fresh", label = "Fresh Run", short = "Fresh" },
+	{ key = "tmog", label = "Transmog Run", short = "Transmog" },
+	{ key = "rep", label = "Rep Farm Run", short = "Rep Farm" },
+}
+
+-- Items worth reserving, per raid: { menu label, short name used in the ad }.
+local RESERVE_ITEMS = {
+	ICC = {
+		{ "Shadowfrost Shards", "Shards" },
+		{ "Primordial Saronite", "Primordial Saronite" },
+		{ "Deathbringer's Will", "DBW" },
+		{ "Invincible's Reins", "Invincible" },
+		{ "Marks of Sanctification", "Marks" },
+		{ "Phylactery of the Nameless Lich", "Phylactery" },
+		{ "Dislodged Foreign Object", "DFO" },
+		{ "Tiny Abomination in a Jar", "Tiny Abom" },
+	},
+	RS = {
+		{ "Charred Twilight Scale", "Charred Scale" },
+		{ "Sharpened Twilight Scale", "Sharpened Scale" },
+		{ "Glowing Twilight Scale", "Glowing Scale" },
+		{ "Petrified Twilight Scale", "Petrified Scale" },
+	},
+	TOC = {
+		{ "Trophies of the Crusade", "Trophies" },
+		{ "Crusader Orbs", "Orbs" },
+		{ "Death's Verdict / Death's Choice", "DV/DC" },
+		{ "Solace of the Fallen / Defeated", "Solace" },
+		{ "Reign of the Dead / Unliving", "Reign" },
+	},
+	ULD = {
+		{ "Mimiron's Head", "Mimiron's Head" },
+		{ "Fragments of Val'anyr", "Fragments" },
+		{ "Runed Orbs", "Runed Orbs" },
+	},
+	EOE = {
+		{ "Reins of the Azure Drake", "Azure Drake" },
+		{ "Reins of the Blue Drake", "Blue Drake" },
+	},
+	OS = {
+		{ "Reins of the Black Drake", "Black Drake" },
+		{ "Reins of the Twilight Drake", "Twilight Drake" },
+	},
+	ONY = {
+		{ "Reins of the Onyxian Drake", "Onyxian Drake" },
+	},
+	VOA = {
+		{ "Grand Black War Mammoth", "Mammoth" },
+	},
+	KARA = {
+		{ "Fiery Warhorse's Reins", "Fiery Warhorse" },
+	},
+	TK = {
+		{ "Ashes of Al'ar", "Ashes of Al'ar" },
+	},
+	BT = {
+		{ "Warglaives of Azzinoth", "Warglaives" },
+	},
+	SWP = {
+		{ "Thori'dal, the Stars' Fury", "Thori'dal" },
+		{ "Sunmotes", "Sunmotes" },
+	},
+}
+-- Offered for every raid, after its own list.
+local RESERVE_GENERIC = {
+	{ "Mount", "Mount" },
+	{ "Tier tokens", "Tier tokens" },
+	{ "Trinkets", "Trinkets" },
+	{ "Legendary items", "Legendary" },
+	{ "Recipes / patterns", "Recipes" },
+}
+
+local reserveItemsBtn, reserveMenuFrame
+
+local QUALITY_COLORS = { ["2"] = "1eff00", ["3"] = "0070dd", ["4"] = "a335ee", ["5"] = "ff8000", ["6"] = "e6cc80" }
+
+-- { { boss = "Lord Marrowgar", items = { { name =, color = }, ... } }, ... }
+-- for the raid+size, from the bundled lists in LootData.lua. nil plus a reason
+-- for a raid that has none (Vault of Archavon).
+local function BossLootFor(raidKey, sizeKey)
+	local raidLoot = JohnnysRaidSpam.ReserveLoot and JohnnysRaidSpam.ReserveLoot[raidKey]
+	if not raidLoot then
+		return nil, "No per-boss list for this raid."
+	end
+	local faction = (UnitFactionGroup("player") == "Alliance") and "A" or "H"
+	local rows = raidLoot[sizeKey .. "_" .. faction] or raidLoot[sizeKey] or raidLoot.ALL
+	if not rows then
+		return nil, "No per-boss list for this size."
+	end
+
+	local result = {}
+	for _, row in ipairs(rows) do
+		local items = {}
+		for entry in string.gmatch(row[2], "[^%^]+") do
+			local quality, name = entry:match("^(%d)(.+)$")
+			if name then
+				table.insert(items, { name = name, color = QUALITY_COLORS[quality] })
+			end
+		end
+		table.insert(result, { boss = row[1], items = items })
+	end
+	return result
+end
+
+-- This raid's quick picks followed by the generic ones.
+local function ReserveItemsFor(raidKey)
+	local items = {}
+	for _, item in ipairs(RESERVE_ITEMS[raidKey] or {}) do
+		table.insert(items, item)
+	end
+	for _, item in ipairs(RESERVE_GENERIC) do
+		table.insert(items, item)
+	end
+	return items
+end
+
+-- Everything ticked for the raid: quick picks in list order, then the
+-- per-boss items alphabetically.
+local function PickedReserveItems(raidKey)
+	local picked = {}
+	local saved = raidKey and JohnnysRaidSpam.db.profile.raidSpamReserveItems[raidKey]
+	if saved then
+		local quick = {}
+		for _, item in ipairs(ReserveItemsFor(raidKey)) do
+			quick[item[2]] = true
+			if saved[item[2]] then
+				table.insert(picked, item[2])
+			end
+		end
+		local others = {}
+		for name in pairs(saved) do
+			if not quick[name] then
+				table.insert(others, name)
+			end
+		end
+		table.sort(others)
+		for _, name in ipairs(others) do
+			table.insert(picked, name)
+		end
+	end
+	return picked
+end
+
+-- "Mount/EoF Run", or "" with nothing ticked.
+local function GetRunTypeText()
+	local ticks = JohnnysRaidSpam.db.profile.raidSpamRunTypes
+	local parts = {}
+	for _, runType in ipairs(RUN_TYPES) do
+		if ticks[runType.key] then
+			table.insert(parts, runType.short)
+		end
+	end
+	if #parts == 0 then
+		return ""
+	end
+	return table.concat(parts, "/") .. " Run"
+end
+
+-- "BoEs, Shards, Primordial Saronite reserved", or "" with nothing reserved.
+local function GetReserveText(raidKey)
+	local profile = JohnnysRaidSpam.db.profile
+	local parts = {}
+	if profile.raidSpamReserveBoE then
+		table.insert(parts, "BoEs")
+	end
+	for _, name in ipairs(PickedReserveItems(raidKey)) do
+		table.insert(parts, name)
+	end
+	local custom = strtrim(profile.raidSpamReserveCustom or "")
+	if custom ~= "" then
+		table.insert(parts, custom)
+	end
+	if #parts == 0 then
+		return ""
+	end
+	return table.concat(parts, ", ") .. " reserved"
+end
+
+-- Closes the gaps an empty token leaves behind ("Need: x -  - whisper me!").
+local function TidyMessage(msg)
+	msg = (msg:gsub("%s+", " "))
+	msg = (msg:gsub("%(%s*%)", ""))
+	local n
+	repeat
+		msg, n = msg:gsub(" %- %- ", " - ")
+	until n == 0
+	msg = (msg:gsub("^%s*%-%s+", ""))
+	msg = (msg:gsub("%s+%-%s*$", ""))
+	return strtrim(msg)
 end
 
 ----------------------------------------------------------------------------
@@ -315,17 +523,39 @@ local function ComposeRecruitMessage()
 		template = DEFAULT_RECRUIT_TEMPLATE
 	end
 
-	return ApplyTemplate(template, {
+	local typeText = GetRunTypeText()
+	local reserveText = GetReserveText(raidKey)
+	-- A hand-edited message without the new tokens still gets the ticked
+	-- options, tacked on the end.
+	if typeText ~= "" and not template:find("{type}", 1, true) then
+		template = template .. " - {type}"
+	end
+	if reserveText ~= "" and not template:find("{reserve}", 1, true) then
+		template = template .. " - {reserve}"
+	end
+
+	local msg = TidyMessage(ApplyTemplate(template, {
 		raid = RaidCompUI.RAID_LABELS[raidKey],
 		size = RaidCompUI.SIZE_LABELS[sizeKey],
+		type = typeText,
 		gs = gs,
 		need = needText,
+		reserve = reserveText,
 		quest = GetWeeklyQuestLink(),
-	})
+	}))
+	-- Third return: every slot is filled, so there's nothing left to advertise
+	-- (see SpamTick).
+	return msg, nil, needText == NEED_FULL
 end
 
 local function RefreshRecruitPreview()
 	local RaidCompUI = GetRaidCompUI()
+
+	if reserveItemsBtn then
+		local raidKey = RaidCompUI and RaidCompUI:GetSelectedRaid()
+		local picked = PickedReserveItems(raidKey)
+		reserveItemsBtn.text:SetText("Items: " .. ((#picked > 0) and table.concat(picked, ", ") or "none"))
+	end
 
 	if not RaidCompUI then
 		recruitRaidText:SetText("|cffff4040Raid Comp not available.|r")
@@ -344,7 +574,11 @@ local function RefreshRecruitPreview()
 
 	local msg, err = ComposeRecruitMessage()
 	if msg then
-		recruitPreviewText:SetText("Preview: " .. msg)
+		-- Chat messages cap at 255 characters; flag it before it gets cut off.
+		local len = string.len(msg)
+		local count = (len > MAX_MESSAGE_LEN) and string.format("  |cffff4040(%d/255 - too long, it won't send)|r", len)
+			or string.format("  |cff9aa8a6(%d/255)|r", len)
+		recruitPreviewText:SetText("Preview: " .. msg .. count)
 	else
 		recruitPreviewText:SetText("Preview: |cffff4040" .. (err or "?") .. "|r")
 	end
@@ -620,7 +854,7 @@ end
 -- ComposeRecruitMessage() text on its own interval.
 ----------------------------------------------------------------------------
 local CHANNEL_ROW_H = 24
-local CHANNEL_ROWS_TOP = -272
+local CHANNEL_ROWS_TOP = -272 - OPTIONS_EXTRA
 
 local channelsParent
 local channelRows = {}   -- current row descriptors, in display order
@@ -781,6 +1015,9 @@ local function SendToRow(row, msg)
 	return true
 end
 
+-- Defined below SpamTick, which stops the run itself once the raid is full.
+local StopSpam
+
 -- Counts every ticked row down and posts the ones that are due, at most one
 -- send per SEND_SPACING so a batch of due rows goes out staggered.
 local function SpamTick(dt)
@@ -790,9 +1027,19 @@ local function SpamTick(dt)
 		if IsRowEnabled(key) then
 			local rem = (remaining[key] or 0) - dt
 			if rem <= 0 and now - lastSendTime >= SEND_SPACING then
-				local msg, err = ComposeRecruitMessage()
+				local msg, err, full = ComposeRecruitMessage()
+				if full then
+					-- Nothing left to recruit - don't keep advertising a full raid.
+					StopSpam()
+					spamStatusText:SetText("|cff40ff40Raid is full|r - stopped.")
+					return
+				end
 				if not msg then
 					spamStatusText:SetText("|cffff4040" .. (err or "Can't send - check settings.") .. "|r")
+					rem = RETRY_DELAY
+				elseif string.len(msg) > MAX_MESSAGE_LEN then
+					-- Would be cut off or rejected; hold until the message is shortened.
+					spamStatusText:SetText(string.format("|cffff4040Message too long (%d/%d) - not sent. Shorten it.|r", string.len(msg), MAX_MESSAGE_LEN))
 					rem = RETRY_DELAY
 				elseif SendToRow(row, msg) then
 					lastSendTime = now
@@ -811,7 +1058,7 @@ local function SpamTick(dt)
 	UpdateAllRowStatus()
 end
 
-local function StopSpam()
+function StopSpam()
 	spamActive = false
 	spamTicker:Hide()
 	wipe(remaining)
@@ -845,7 +1092,7 @@ local function BuildChannelsSection(parent)
 	channelsParent = parent
 
 	local header = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	header:SetPoint("TOP", 0, -246)
+	header:SetPoint("TOP", 0, -246 - OPTIONS_EXTRA)
 	header:SetText("Channels")
 
 	spamStartBtn = Skin:CreateButton(parent, 120, 24, "Start")
@@ -881,6 +1128,148 @@ local function BuildChannelsSection(parent)
 	RefreshChannelRows()
 end
 
+-- A tick box with its label to the right; returns the box.
+local function LabelledCheck(parent, x, y, text, initial, onToggle)
+	local box = Skin:CreateCheckbox(parent, 14, initial, onToggle)
+	box:SetPoint("TOPLEFT", x, y)
+	local label = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	label:SetPoint("LEFT", box, "RIGHT", 6, 0)
+	label:SetText(text)
+	return box
+end
+
+-- Reserve picker for the raid+size picked in Raid Comp: a "Common" submenu of
+-- quick picks, then one submenu per boss with that boss's drops (see
+-- BossLootFor). Everything is tick-to-toggle and the menu stays open.
+local function ShowReserveMenu()
+	local RaidCompUI = GetRaidCompUI()
+	local raidKey, sizeKey
+	if RaidCompUI then
+		raidKey, sizeKey = RaidCompUI:GetSelectedRaid()
+	end
+	if not raidKey then
+		return
+	end
+	local all = JohnnysRaidSpam.db.profile.raidSpamReserveItems
+	all[raidKey] = all[raidKey] or {}
+	local saved = all[raidKey]
+	if not reserveMenuFrame then
+		reserveMenuFrame = CreateFrame("Frame", "JohnnysRaidSpamReserveMenu", UIParent, "UIDropDownMenuTemplate")
+	end
+
+	local function Toggle(name)
+		return function()
+			saved[name] = (not saved[name]) or nil
+			RefreshRecruitPreview()
+		end
+	end
+
+	local sizeLabel = (RaidCompUI.SIZE_LABELS[sizeKey] and sizeKey ~= "CLASSRUN") and (" " .. RaidCompUI.SIZE_LABELS[sizeKey]) or ""
+	local menu = { { text = "Reserved in " .. (RaidCompUI.RAID_LABELS[raidKey] or raidKey) .. sizeLabel, isTitle = 1, notCheckable = 1 } }
+
+	local common = {}
+	for _, item in ipairs(ReserveItemsFor(raidKey)) do
+		table.insert(common, {
+			text = item[1],
+			checked = saved[item[2]] and true or false,
+			keepShownOnClick = 1,
+			func = Toggle(item[2]),
+		})
+	end
+	table.insert(menu, { text = "Common", hasArrow = true, notCheckable = 1, menuList = common })
+
+	local okLoot, bosses, reason = pcall(BossLootFor, raidKey, (sizeKey == "CLASSRUN") and "10" or sizeKey)
+	if okLoot and bosses then
+		for _, boss in ipairs(bosses) do
+			local list, count = {}, 0
+			for _, item in ipairs(boss.items) do
+				if saved[item.name] then
+					count = count + 1
+				end
+				table.insert(list, {
+					text = item.color and ("|cff" .. item.color .. item.name .. "|r") or item.name,
+					checked = saved[item.name] and true or false,
+					keepShownOnClick = 1,
+					func = Toggle(item.name),
+				})
+			end
+			table.insert(menu, {
+				text = boss.boss .. ((count > 0) and ("  |cffb9e24a(" .. count .. ")|r") or ""),
+				hasArrow = true,
+				notCheckable = 1,
+				menuList = list,
+			})
+		end
+	else
+		table.insert(menu, { text = (okLoot and reason) or "Per-boss lists unavailable.", notCheckable = 1, disabled = 1 })
+	end
+
+	table.insert(menu, {
+		text = "Clear all",
+		notCheckable = 1,
+		func = function()
+			all[raidKey] = nil
+			RefreshRecruitPreview()
+		end,
+	})
+	table.insert(menu, { text = CANCEL or "Cancel", notCheckable = 1 })
+	EasyMenu(menu, reserveMenuFrame, "cursor", 0, 0, "MENU")
+end
+
+-- Run type ticks, then what's reserved: BoEs, a multi-select item list for
+-- the current raid, and a free-text box for anything not on the list.
+local function BuildRunOptions(parent)
+	local profile = JohnnysRaidSpam.db.profile
+	local top = -236
+
+	AddDivider(parent, top)
+
+	local typeHead = Skin:Heading(parent, 11, Skin.C.muted)
+	typeHead:SetPoint("TOPLEFT", 4, top - 8)
+	typeHead:SetText("RUN TYPE")
+	for i, runType in ipairs(RUN_TYPES) do
+		local col = (i - 1) % 3
+		local row = math.floor((i - 1) / 3)
+		LabelledCheck(parent, 4 + col * 150, top - 26 - row * 20, runType.label, profile.raidSpamRunTypes[runType.key], function(checked)
+			profile.raidSpamRunTypes[runType.key] = checked or nil
+			RefreshRecruitPreview()
+		end)
+	end
+
+	local resHead = Skin:Heading(parent, 11, Skin.C.muted)
+	resHead:SetPoint("TOPLEFT", 4, top - 70)
+	resHead:SetText("RESERVED")
+	LabelledCheck(parent, 4, top - 88, "BoEs", profile.raidSpamReserveBoE, function(checked)
+		profile.raidSpamReserveBoE = checked
+		RefreshRecruitPreview()
+	end)
+
+	reserveItemsBtn = Skin:CreateButton(parent, 364, 20, "Items: none")
+	reserveItemsBtn:SetPoint("TOPLEFT", 80, top - 85)
+	reserveItemsBtn.text:ClearAllPoints()
+	reserveItemsBtn.text:SetPoint("LEFT", 6, 0)
+	reserveItemsBtn.text:SetPoint("RIGHT", -18, 0)
+	reserveItemsBtn.text:SetJustifyH("LEFT")
+	local arrow = reserveItemsBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	arrow:SetPoint("RIGHT", -6, 0)
+	arrow:SetTextColor(0.7, 0.7, 0.7)
+	arrow:SetText("v")
+	reserveItemsBtn:SetScript("OnClick", ShowReserveMenu)
+
+	local otherLabel = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	otherLabel:SetPoint("TOPLEFT", 4, top - 113)
+	otherLabel:SetTextColor(0.7, 0.7, 0.7)
+	otherLabel:SetText("Other:")
+	local otherBox = Skin:CreateEditBox(parent, 364, 20)
+	otherBox:SetPoint("TOPLEFT", 80, top - 109)
+	otherBox.editBox:SetMaxLetters(60)
+	otherBox.editBox:SetText(profile.raidSpamReserveCustom or "")
+	otherBox.editBox:SetScript("OnTextChanged", function(self)
+		profile.raidSpamReserveCustom = self:GetText()
+		RefreshRecruitPreview()
+	end)
+end
+
 local function BuildRecruitPanel(parent)
 	recruitRaidText = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	recruitRaidText:SetPoint("TOPLEFT", 4, -6)
@@ -893,10 +1282,15 @@ local function BuildRecruitPanel(parent)
 	local templateLabel = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	templateLabel:SetPoint("TOPLEFT", 4, -52)
 	templateLabel:SetTextColor(0.7, 0.7, 0.7)
-	templateLabel:SetText("Message (tokens: {raid} {size} {gs} {need} {quest}):")
+	templateLabel:SetText("Message (tokens: {raid} {size} {type} {gs} {need} {reserve} {quest}):")
 
 	recruitTemplateBox = CreateTemplateBox(parent, TEMPLATE_BOX_WIDTH, 74)
 	recruitTemplateBox:SetPoint("TOPLEFT", 4, -68)
+	-- A message still on the previous default picks up the new {type} and
+	-- {reserve} tokens; an edited one is left alone (see ComposeRecruitMessage).
+	if JohnnysRaidSpam.db.profile.raidSpamRecruitTemplate == OLD_RECRUIT_TEMPLATE then
+		JohnnysRaidSpam.db.profile.raidSpamRecruitTemplate = DEFAULT_RECRUIT_TEMPLATE
+	end
 	recruitTemplateBox.editBox:SetText(JohnnysRaidSpam.db.profile.raidSpamRecruitTemplate or DEFAULT_RECRUIT_TEMPLATE)
 	recruitTemplateBox.editBox:SetScript("OnTextChanged", function(self)
 		JohnnysRaidSpam.db.profile.raidSpamRecruitTemplate = self:GetText()
@@ -930,7 +1324,9 @@ local function BuildRecruitPanel(parent)
 		RefreshRecruitPreview()
 	end)
 
-	AddDivider(parent, -236)
+	BuildRunOptions(parent)
+
+	AddDivider(parent, -236 - OPTIONS_EXTRA)
 
 	BuildChannelsSection(parent)
 end

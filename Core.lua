@@ -41,12 +41,20 @@ local defaults = {
 	-- Modules\RaidCompUI\UI.lua's GearScore lookup section).
 	global = {
 		raidCompGearScores = {},
+		-- [name] = { role = "TANK"/"HEALER"/"DAMAGER", spec = "Holy", class =, at = time() }
+		-- - the spec read from a raid member's talents when they were inspected
+		-- (see GSStoreRole in Modules\RaidCompUI\UI.lua), used instead of the
+		-- per-class role guess.
+		raidCompRoles = {},
 		-- [name] = { ach = {[id]=bool}, stats = {[id]="7"}, updatedAt = time() }.
 		-- time(), not GetTime(), so the stale check survives a client restart.
 		raidCompAchievements = {},
 		-- Highest addon version heard from other players (see
 		-- Modules\VersionCheck.lua); nil when we're up to date.
 		latestSeenVersion = nil,
+		-- Addon version the changelog window was last opened on (see
+		-- Modules\Changelog.lua); entries newer than it are tagged NEW.
+		changelogSeenVersion = nil,
 	},
 }
 

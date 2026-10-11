@@ -74,6 +74,9 @@ local railNeededHeight = 0
 -- ({kind="bench", value=name}).
 local currentMatches = {}
 local selection = nil
+-- [name] = that member's ScanRoster entry from the last RefreshComp, for the
+-- "role is only a class guess" mark on cards/chips and the tooltip's Role line.
+local rosterByName = {}
 
 -- [name] = true when a GearScore rescan returned a *different* score for that
 -- member and the leader hasn't acknowledged it yet (by hovering or clicking
@@ -83,59 +86,109 @@ local selection = nil
 local gsChanged = {}
 
 -- Role of each talent tree, in the talent frame's fixed left-to-right tab
--- order for 3.3.5a - the tree with the most points is taken as your spec.
+-- order for 3.3.5a - the tree with the most points is taken as the spec.
+-- `first` is the first tree's name, used to check that inspect talent data
+-- really belongs to a player of that class (see DetectSpecRole).
 local TALENT_TAB_ROLES = {
-	WARRIOR = { "DAMAGER", "DAMAGER", "TANK" },          -- Arms, Fury, Protection
-	PALADIN = { "HEALER", "TANK", "DAMAGER" },           -- Holy, Protection, Retribution
-	HUNTER = { "DAMAGER", "DAMAGER", "DAMAGER" },
-	ROGUE = { "DAMAGER", "DAMAGER", "DAMAGER" },
-	PRIEST = { "HEALER", "HEALER", "DAMAGER" },          -- Discipline, Holy, Shadow
-	DEATHKNIGHT = { "TANK", "DAMAGER", "DAMAGER" },      -- Blood, Frost, Unholy
-	SHAMAN = { "DAMAGER", "DAMAGER", "HEALER" },         -- Elemental, Enhancement, Restoration
-	MAGE = { "DAMAGER", "DAMAGER", "DAMAGER" },
-	WARLOCK = { "DAMAGER", "DAMAGER", "DAMAGER" },
-	DRUID = { "DAMAGER", "DAMAGER", "HEALER" },          -- Balance, Feral, Restoration
+	WARRIOR = { "DAMAGER", "DAMAGER", "TANK", first = "Arms" },              -- Arms, Fury, Protection
+	PALADIN = { "HEALER", "TANK", "DAMAGER", first = "Holy" },               -- Holy, Protection, Retribution
+	HUNTER = { "DAMAGER", "DAMAGER", "DAMAGER", first = "Beast Mastery" },
+	ROGUE = { "DAMAGER", "DAMAGER", "DAMAGER", first = "Assassination" },
+	PRIEST = { "HEALER", "HEALER", "DAMAGER", first = "Discipline" },        -- Discipline, Holy, Shadow
+	-- Any DK tree can tank or DPS on 3.3.5 - decided by TANK_TALENTS below.
+	DEATHKNIGHT = { "DAMAGER", "DAMAGER", "DAMAGER", first = "Blood" },      -- Blood, Frost, Unholy
+	SHAMAN = { "DAMAGER", "DAMAGER", "HEALER", first = "Elemental" },        -- Elemental, Enhancement, Restoration
+	MAGE = { "DAMAGER", "DAMAGER", "DAMAGER", first = "Arcane" },
+	WARLOCK = { "DAMAGER", "DAMAGER", "DAMAGER", first = "Affliction" },
+	-- Feral is cat or bear - decided by TANK_TALENTS below.
+	DRUID = { "DAMAGER", "DAMAGER", "HEALER", first = "Balance" },           -- Balance, Feral, Restoration
 }
 
--- Your own role from your active talents - no inspect needed, since your own
--- talents can be read directly. nil if no points are spent yet.
-local function GetPlayerSpecRole(class)
+-- Classes whose tank spec isn't a tree of its own: enough points across these
+-- survival talents means tank. `tab` limits the check to when that tree is
+-- the main one. English talent names, like the rest of the addon.
+local TANK_TALENTS = {
+	-- A DK tank takes all three (15 points); DPS builds rarely more than one.
+	DEATHKNIGHT = { points = 10, names = { ["Blade Barrier"] = true, ["Toughness"] = true, ["Anticipation"] = true } },
+	-- Bears take all three (9 points); cats skip them.
+	DRUID = { tab = 2, points = 5, names = { ["Thick Hide"] = true, ["Protector of the Pack"] = true, ["Natural Reaction"] = true } },
+}
+
+-- Role + main tree name from talents: your own (inspect = false), or those of
+-- the player whose inspect data the client currently holds (inspect = true -
+-- only valid right after INSPECT_TALENT_READY, see GSStoreRole). nil if no
+-- points are spent, or if the inspect data is for a different class.
+local function DetectSpecRole(class, inspect)
 	local roles = TALENT_TAB_ROLES[class]
 	if not roles then
 		return nil
 	end
-	local bestTab, bestPoints = nil, 0
-	for tabIndex = 1, GetNumTalentTabs() do
-		local _, _, pointsSpent = GetTalentTabInfo(tabIndex)
+	inspect = inspect and true or false
+	local group = GetActiveTalentGroup(inspect, false)
+	local bestTab, bestPoints, bestName = nil, 0, nil
+	for tabIndex = 1, GetNumTalentTabs(inspect, false) do
+		local tabName, _, pointsSpent = GetTalentTabInfo(tabIndex, inspect, false, group)
+		if inspect and tabIndex == 1 and tabName ~= roles.first then
+			return nil
+		end
 		if (pointsSpent or 0) > bestPoints then
-			bestTab, bestPoints = tabIndex, pointsSpent
+			bestTab, bestPoints, bestName = tabIndex, pointsSpent, tabName
 		end
 	end
-	return bestTab and roles[bestTab]
+	if not bestTab then
+		return nil
+	end
+
+	local role = roles[bestTab]
+	local rule = TANK_TALENTS[class]
+	if rule and (not rule.tab or rule.tab == bestTab) then
+		local points = 0
+		for tabIndex = 1, GetNumTalentTabs(inspect, false) do
+			for talentIndex = 1, GetNumTalents(tabIndex, inspect, false) do
+				local talentName, _, _, _, rank = GetTalentInfo(tabIndex, talentIndex, inspect, false, group)
+				if talentName and rule.names[talentName] then
+					points = points + (rank or 0)
+				end
+			end
+		end
+		if points >= rule.points then
+			role = "TANK"
+		end
+	end
+	return role, bestName
 end
 
--- Resolves a unit's role: the manually-set raid-frame role icon if present,
--- else (for the player only) the real active talent spec via GetPlayerSpecRole
--- - no inspect needed since that reads your own talents directly - else a rough
--- per-class guess (see RaidCompUI.CLASS_DEFAULT_ROLE) so the member still
--- shows up instead of being silently dropped.
-local function ResolveUnitRole(unit, class)
+-- Resolves a unit's role, best source first: the manually-set raid-frame role
+-- icon; your own active talents; the spec read from this player's talents the
+-- last time they were inspected (db.global.raidCompRoles, filled alongside the
+-- GearScore inspect - see GSStoreRole); and only then a rough per-class guess
+-- (see RaidCompUI.CLASS_DEFAULT_ROLE) so the member still shows up instead of
+-- being silently dropped. Returns role, guessed, specName - guessed is true
+-- for that last case, so the card can flag it; the next successful inspect
+-- replaces it and the comp re-sorts them.
+local function ResolveUnitRole(unit, class, name)
 	local assigned = UnitGroupRolesAssigned(unit)
 	if assigned and assigned ~= "NONE" then
-		return assigned
+		return assigned, false
 	end
 
 	-- UnitIsUnit, not a string == "player" check - in an actual raid the
 	-- player's own unit token is "raidN" for whichever N they're slotted at,
 	-- not literally "player".
 	if UnitIsUnit(unit, "player") then
-		local role = GetPlayerSpecRole(class)
+		local role, spec = DetectSpecRole(class, false)
 		if role then
-			return role
+			return role, false, spec
 		end
 	end
 
-	return RaidCompUI.CLASS_DEFAULT_ROLE[class] or "DAMAGER"
+	local known = JohnnysRaidComp.db and JohnnysRaidComp.db.global.raidCompRoles
+	local seen = known and name and known[name]
+	if seen and seen.role and seen.class == class then
+		return seen.role, false, seen.spec
+	end
+
+	return RaidCompUI.CLASS_DEFAULT_ROLE[class] or "DAMAGER", true
 end
 
 ----------------------------------------------------------------------------
@@ -156,7 +209,9 @@ function RaidCompUI:ScanRoster()
 				-- 3rd return of GetRaidRosterInfo is subgroup (1-8) - same
 				-- index i as "raidN" above, so no name-matching needed.
 				local _, _, subgroup = GetRaidRosterInfo(i)
-				table.insert(roster, { name = UnitName(unit), class = class, role = ResolveUnitRole(unit, class), unit = unit, subgroup = subgroup })
+				local name = UnitName(unit)
+				local role, guessed, spec = ResolveUnitRole(unit, class, name)
+				table.insert(roster, { name = name, class = class, role = role, roleGuessed = guessed, spec = spec, unit = unit, subgroup = subgroup })
 			end
 		end
 	else
@@ -168,7 +223,9 @@ function RaidCompUI:ScanRoster()
 		for _, unit in ipairs(units) do
 			if UnitExists(unit) then
 				local _, class = UnitClass(unit)
-				table.insert(roster, { name = UnitName(unit), class = class, role = ResolveUnitRole(unit, class), unit = unit })
+				local name = UnitName(unit)
+				local role, guessed, spec = ResolveUnitRole(unit, class, name)
+				table.insert(roster, { name = name, class = class, role = role, roleGuessed = guessed, spec = spec, unit = unit })
 			end
 		end
 	end
@@ -337,6 +394,16 @@ function ShowGearScoreTooltip(owner, name)
 	GameTooltip:SetOwner(owner, "ANCHOR_TOP")
 	GameTooltip:SetText(name)
 
+	local member = rosterByName[name]
+	if member and member.role then
+		local word = (member.role == "TANK" and "Tank") or (member.role == "HEALER" and "Healer") or "DPS"
+		if member.roleGuessed then
+			GameTooltip:AddLine("Role: " .. word .. "? Guessed from class - not inspected yet", 1, 0.85, 0.40)
+		elseif member.spec then
+			GameTooltip:AddLine("Role: " .. word .. " (" .. member.spec .. ")", 0.6, 0.6, 0.6)
+		end
+	end
+
 	local blacklistEntry = JohnnysBlackList and JohnnysBlackList.BlackListUI and JohnnysBlackList.BlackListUI:GetEntryByName(name)
 	if blacklistEntry then
 		local reason = blacklistEntry.history and blacklistEntry.history[1] and blacklistEntry.history[1].reason
@@ -365,7 +432,14 @@ function ShowGearScoreTooltip(owner, name)
 	end
 
 	if entry.updatedAt then
-		GameTooltip:AddLine(string.format("Updated %ds ago", math.floor(GetTime() - entry.updatedAt)), 0.5, 0.5, 0.5)
+		-- A stamp from before these were time()-based reads as years old - skip it.
+		local age = time() - entry.updatedAt
+		if age >= 0 and age < 86400 then
+			local text = (age < 90) and (age .. "s") or (math.floor(age / 60) .. "m")
+			GameTooltip:AddLine("Updated " .. text .. " ago", 0.5, 0.5, 0.5)
+		else
+			GameTooltip:AddLine("From an earlier session - re-scan pending", 0.5, 0.5, 0.5)
+		end
 	end
 
 	AddAchievementLines(name)
@@ -427,6 +501,21 @@ function GetOverrides(templateKey)
 		all[templateKey] = overrides
 	end
 	return overrides
+end
+
+-- Forgets every hand-made placement, for all raids and sizes. Called when the
+-- group ends (see Init.lua): a swap pins the slot it emptied as "keep empty",
+-- and left saved that hole stayed "open" in next week's raid while matching
+-- players sat on the bench.
+function RaidCompUI:ClearManualAssignments()
+	local all = JohnnysRaidComp.db.profile.raidCompManualAssignments
+	for templateKey in pairs(all) do
+		all[templateKey] = nil
+	end
+	selection = nil
+	if self:IsShowingComp() then
+		self:RefreshComp()
+	end
 end
 
 function CurrentTemplateKey()
@@ -956,7 +1045,10 @@ function SetCardState(card, slot, matchedName, matchedClass, isClassRun)
 		card:SetBackdropBorderColor(Skin.C.accent[1], Skin.C.accent[2], Skin.C.accent[3], 1)
 		card.label:SetTextColor(Skin.C.muted[1], Skin.C.muted[2], Skin.C.muted[3])
 		card.nameText:SetTextColor(Skin.C.text[1], Skin.C.text[2], Skin.C.text[3])
-		card.nameText:SetText(FormatNameWithClass(matchedName, matchedClass))
+		-- Amber "?" = placed by class guess only, not inspected yet (see ResolveUnitRole).
+		local member = rosterByName[matchedName]
+		local guessMark = (not isClassRun and member and member.roleGuessed) and " |cffffd966?|r" or ""
+		card.nameText:SetText(FormatNameWithClass(matchedName, matchedClass) .. guessMark)
 
 		-- pcall'd for the same reason as RefreshComp's RequestGearScore loop -
 		-- this reads the GearScore cache and must never be able to
@@ -1114,7 +1206,9 @@ end
 
 function SetBenchChipState(chip, name, class)
 	chip.name = name
-	chip.nameText:SetText(FormatNameWithClass(name, class))
+	local member = rosterByName[name]
+	local guessMark = (currentSize ~= "CLASSRUN" and member and member.roleGuessed) and " |cffffd966?|r" or ""
+	chip.nameText:SetText(FormatNameWithClass(name, class) .. guessMark)
 	chip:SetBackdropColor(0.090, 0.114, 0.125, 0.6)
 	chip:SetBackdropBorderColor(Skin.C.rule2[1], Skin.C.rule2[2], Skin.C.rule2[3], 1)
 	chip.nameText:SetTextColor(1, 0.9, 0.6)
@@ -1352,6 +1446,10 @@ function RaidCompUI:RefreshComp()
 	local templateKey = currentRaid .. "_" .. currentSize
 	local template = RaidCompUI.TEMPLATES[templateKey]
 	local roster = self:ScanRoster()
+	rosterByName = {}
+	for _, member in ipairs(roster) do
+		rosterByName[member.name] = member
+	end
 	local matches, have, overflow = self:BuildMatches(templateKey, roster)
 	currentMatches = matches
 
@@ -2280,6 +2378,15 @@ local function BuildFrame()
 			local firstRaid = RaidCompUI.RAID_ORDER[1]
 			RaidCompUI:ShowComp(firstRaid, RaidCompUI.RAID_SIZE_ORDER[firstRaid][1])
 		end
+		-- First open after an update: show what changed, docked to the left.
+		if JohnnysRaidComp.Changelog then
+			pcall(JohnnysRaidComp.Changelog.ShowIfUnseen, JohnnysRaidComp.Changelog)
+		end
+	end)
+	mainFrame:SetScript("OnHide", function()
+		if JohnnysRaidComp.Changelog then
+			JohnnysRaidComp.Changelog:Hide()
+		end
 	end)
 end
 
@@ -2368,7 +2475,14 @@ end
 
 local function GSIsFresh(name)
 	local entry = GSGetCache()[name]
-	return entry and entry.updatedAt and (GetTime() - entry.updatedAt) < GS_STALE_SECONDS
+	-- time(), not GetTime(): the cache is saved between sessions and GetTime()
+	-- restarts with the PC, which made old entries look fresh forever. A stamp
+	-- in the future (clock change) counts as stale too.
+	if not (entry and entry.updatedAt) then
+		return false
+	end
+	local age = time() - entry.updatedAt
+	return age >= 0 and age < GS_STALE_SECONDS
 end
 
 -- Only ever called with a genuine, complete reading (GSResolveScoreBody
@@ -2397,7 +2511,7 @@ function RaidCompUI:StoreGearScore(name, score, avgIlvl, hasPvpGear, pvpSlots)
 	end
 	entry.hasPvpGear = hasPvpGear
 	entry.pvpSlots = pvpSlots
-	entry.updatedAt = GetTime()
+	entry.updatedAt = time()
 
 	-- Flag a genuine change so gsFlashPump pulses this member's box until the
 	-- leader acknowledges it. A first-ever reading (oldScore == nil) is not a
@@ -2457,6 +2571,41 @@ local function GSScanPvpGear(unit)
 		end
 	end
 	return hasPvp, slots, sawAnyItem
+end
+
+-- The request behind the most recent NotifyInspect ({name=, unit=, at=}) - the
+-- only player INSPECT_TALENT_READY can be about, since that event carries no
+-- name or GUID on 3.3.5a.
+local gsLastInspect
+
+-- INSPECT_TALENT_READY: the inspected player's talents are readable now, so
+-- work out their real role (see DetectSpecRole) and remember it. If that
+-- differs from what they were placed by - usually the class guess - the comp
+-- is repainted and BuildMatches moves them to a slot of their real role.
+-- Ignored when it can't be tied to our own request: too long after it, the
+-- unit has changed, or the talent data is for another class (another addon's
+-- inspect answered instead).
+local function GSStoreRole()
+	local request = gsLastInspect
+	if not request or GetTime() - request.at > 3 then
+		return
+	end
+	if not (UnitExists(request.unit) and UnitName(request.unit) == request.name) then
+		return
+	end
+	local _, class = UnitClass(request.unit)
+	local ok, role, spec = pcall(DetectSpecRole, class, true)
+	if not ok or not role then
+		return
+	end
+
+	local known = JohnnysRaidComp.db.global.raidCompRoles
+	local old = known[request.name]
+	-- time(), not GetTime(), since this is saved between sessions.
+	known[request.name] = { role = role, spec = spec, class = class, at = time() }
+	if (not old or old.role ~= role or old.spec ~= spec) and RaidCompUI:IsShowingComp() then
+		RaidCompUI:RefreshComp()
+	end
 end
 
 local function GSQueueRetry(name, unit)
@@ -2655,11 +2804,16 @@ local gsSinceLastRequest = GS_REQUEST_INTERVAL
 gsPump:SetScript("OnUpdate", function(self, elapsed)
 	gsSinceLastRequest = gsSinceLastRequest + elapsed
 
-	if gsSinceLastRequest >= GS_REQUEST_INTERVAL and #gsRequestQueue > 0 then
+	-- Stand aside while the player has someone's Inspect window open - our
+	-- NotifyInspect on another member would swap the gear it's showing.
+	local inspectOpen = InspectFrame and InspectFrame:IsShown()
+
+	if not inspectOpen and gsSinceLastRequest >= GS_REQUEST_INTERVAL and #gsRequestQueue > 0 then
 		local request = table.remove(gsRequestQueue, 1)
 		if UnitExists(request.unit) and UnitName(request.unit) == request.name and CanInspect(request.unit) then
 			gsSinceLastRequest = 0
 			gsPendingGuid[UnitGUID(request.unit)] = request
+			gsLastInspect = { name = request.name, unit = request.unit, at = GetTime() }
 			NotifyInspect(request.unit)
 			GSQueueRetry(request.name, request.unit) -- safety net if INSPECT_READY never fires
 		else
@@ -2687,11 +2841,35 @@ end)
 
 local gsInspectFrame = CreateFrame("Frame")
 gsInspectFrame:RegisterEvent("INSPECT_READY")
+-- Talents of the player we just inspected - their real role (see GSStoreRole).
+gsInspectFrame:RegisterEvent("INSPECT_TALENT_READY")
 -- Own gear swap (e.g. PvE -> PvP set before a raid) - re-check immediately
 -- rather than waiting out GS_STALE_SECONDS, since this is the one case where
 -- we know for certain the cached reading is now out of date.
 gsInspectFrame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
 gsInspectFrame:SetScript("OnEvent", function(self, event, guid)
+	if event == "INSPECT_TALENT_READY" then
+		-- This is the inspect answer on 3.3.5a (INSPECT_READY with a GUID only
+		-- exists on later clients, so that path below never runs here). With
+		-- the player's own Inspect window open it's the answer to their
+		-- inspect, not ours.
+		if InspectFrame and InspectFrame:IsShown() then
+			return
+		end
+		GSStoreRole()
+		-- Read the score now instead of waiting for the fallback timer, and
+		-- drop that timer so the same request isn't resolved twice.
+		local request = gsLastInspect
+		if request and GetTime() - request.at <= 3 and gsInFlight[request.name] then
+			for i = #gsRetryQueue, 1, -1 do
+				if gsRetryQueue[i].name == request.name then
+					table.remove(gsRetryQueue, i)
+				end
+			end
+			GSResolveScore(request.name, request.unit)
+		end
+		return
+	end
 	if event == "PLAYER_EQUIPMENT_CHANGED" then
 		local cache = GSGetCache()
 		cache[UnitName("player")] = nil
