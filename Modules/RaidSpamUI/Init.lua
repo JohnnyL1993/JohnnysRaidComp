@@ -1015,6 +1015,21 @@ local function SendToRow(row, msg)
 	return true
 end
 
+-- Esc closes the Raid Spammer like any other window - except while a run is
+-- going, since closing it stops the run and a stray Esc (clearing a target,
+-- say) shouldn't quietly end your advertising.
+local ESC_FRAME_NAME = "JohnnysAddonHubRaidSpamFrame"
+local function SetEscCloses(on)
+	for i = #UISpecialFrames, 1, -1 do
+		if UISpecialFrames[i] == ESC_FRAME_NAME then
+			table.remove(UISpecialFrames, i)
+		end
+	end
+	if on then
+		table.insert(UISpecialFrames, ESC_FRAME_NAME)
+	end
+end
+
 -- Defined below SpamTick, which stops the run itself once the raid is full.
 local StopSpam
 
@@ -1060,6 +1075,7 @@ end
 
 function StopSpam()
 	spamActive = false
+	SetEscCloses(true)
 	spamTicker:Hide()
 	wipe(remaining)
 	spamStartBtn.text:SetText("Start")
@@ -1082,6 +1098,7 @@ local function StartSpam()
 
 	wipe(remaining)
 	spamActive = true
+	SetEscCloses(false)
 	spamTicker:Show()
 	spamStartBtn.text:SetText("Stop")
 	spamStatusText:SetText("Running...")
@@ -1338,7 +1355,10 @@ local function BuildFrame()
 	local pos = JohnnysRaidSpam.db.profile.raidSpamPanelPosition
 	mainFrame:SetPoint(pos.point, UIParent, pos.relativePoint, pos.x, pos.y)
 
-	mainFrame:SetFrameStrata("DIALOG")
+	-- Same strata as the Raid Comp window it docks to (see its BuildFrame).
+	mainFrame:SetFrameStrata("HIGH")
+	mainFrame:SetClampedToScreen(true)
+	SetEscCloses(true)
 	mainFrame:SetMovable(true)
 	mainFrame:EnableMouse(true)
 	mainFrame:RegisterForDrag("LeftButton")

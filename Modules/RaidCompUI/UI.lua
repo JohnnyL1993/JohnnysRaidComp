@@ -1,3 +1,8 @@
+-- This file is the window itself. Two parts of it live in their own files,
+-- loaded right after this one (see the .toc) and reached through RaidCompUI:
+--   Inspect.lua       GearScore / PvP gear / talent-role lookups (inspect queue)
+--   Achievements.lua  achievement + kill-count lookups for the tooltip
+--
 -- Raid Comp window, one screen: a rail of WotLK raids on the left, size
 -- toggles across the top, and that raid+size's tailored "ideal comp" below,
 -- grouped into Tanks / Healers / DPS sections that light up as real raid/party
@@ -80,10 +85,12 @@ local rosterByName = {}
 
 -- [name] = true when a GearScore rescan returned a *different* score for that
 -- member and the leader hasn't acknowledged it yet (by hovering or clicking
--- their box). Drives the amber pulse in gsFlashPump (see the GearScore section
--- at the bottom of this file). Session-only, not persisted - it's a transient
+-- their box). Drives the amber pulse in gsFlashPump (see the Flash pump section at the bottom of this
+-- file). Session-only, not persisted - it's a transient
 -- "look at this" cue, and a re-inspect on login naturally re-flags a real change.
 local gsChanged = {}
+-- Inspect.lua sets the flags (a rescan came back with a different score).
+RaidCompUI.gsChanged = gsChanged
 
 -- Role of each talent tree, in the talent frame's fixed left-to-right tab
 -- order for 3.3.5a - the tree with the most points is taken as the spec.
@@ -157,10 +164,12 @@ local function DetectSpecRole(class, inspect)
 	end
 	return role, bestName
 end
+-- Inspect.lua reads an inspected player's talents with this.
+RaidCompUI.DetectSpecRole = DetectSpecRole
 
 -- Resolves a unit's role, best source first: the manually-set raid-frame role
 -- icon; your own active talents; the spec read from this player's talents the
--- last time they were inspected (db.global.raidCompRoles, filled alongside the
+-- last time they were inspected (db.realm.raidCompRoles, filled alongside the
 -- GearScore inspect - see GSStoreRole); and only then a rough per-class guess
 -- (see RaidCompUI.CLASS_DEFAULT_ROLE) so the member still shows up instead of
 -- being silently dropped. Returns role, guessed, specName - guessed is true
@@ -182,7 +191,7 @@ local function ResolveUnitRole(unit, class, name)
 		end
 	end
 
-	local known = JohnnysRaidComp.db and JohnnysRaidComp.db.global.raidCompRoles
+	local known = JohnnysRaidComp.db and JohnnysRaidComp.db.realm.raidCompRoles
 	local seen = known and name and known[name]
 	if seen and seen.role and seen.class == class then
 		return seen.role, false, seen.spec
@@ -344,8 +353,6 @@ local GetOverrides, CurrentTemplateKey
 local SwapSlots, AssignBenchToSlot, HandlePick, OnCardClick, OnBenchClick
 local FormatNameWithClass, OnToggleTank, OnToggleHealer
 local FormatGearScoreText, FormatCompactGearScoreText, ShowGearScoreTooltip
--- Defined in the achievement lookup section at the bottom of this file.
-local AddAchievementLines, AchClearPending
 -- Defined with the class-slot editing further down.
 local ShowSlotMenu
 
@@ -364,10 +371,10 @@ function FormatNameWithClass(name, class)
 end
 
 -- GearScore text + color for a slot card, from the GearScore lookup cache
--- (see the lookup section further down this file). Gray "GS --" until a
+-- (see Inspect.lua). Gray "GS --" until a
 -- lookup succeeds.
 function FormatGearScoreText(name)
-	local entry = JohnnysRaidComp.db.global.raidCompGearScores[name]
+	local entry = JohnnysRaidComp.db.realm.raidCompGearScores[name]
 	if not entry or not entry.score then
 		return "GS --", 0.5, 0.5, 0.5
 	end
@@ -377,7 +384,7 @@ end
 
 -- Same, but abbreviated (e.g. "5.8k") for the much narrower bench chips.
 function FormatCompactGearScoreText(name)
-	local entry = JohnnysRaidComp.db.global.raidCompGearScores[name]
+	local entry = JohnnysRaidComp.db.realm.raidCompGearScores[name]
 	if not entry or not entry.score then
 		return "--", 0.5, 0.5, 0.5
 	end
@@ -410,10 +417,10 @@ function ShowGearScoreTooltip(owner, name)
 		GameTooltip:AddLine("BLACKLISTED" .. (reason and (": " .. reason) or ""), 1, 0.15, 0.15)
 	end
 
-	local entry = JohnnysRaidComp.db.global.raidCompGearScores[name]
+	local entry = JohnnysRaidComp.db.realm.raidCompGearScores[name]
 	if not entry or not entry.score then
 		GameTooltip:AddLine("GearScore: not yet inspected", 0.6, 0.6, 0.6)
-		AddAchievementLines(name)
+		RaidCompUI.AddAchievementLines(name)
 		GameTooltip:Show()
 		return
 	end
@@ -442,7 +449,7 @@ function ShowGearScoreTooltip(owner, name)
 		end
 	end
 
-	AddAchievementLines(name)
+	RaidCompUI.AddAchievementLines(name)
 	GameTooltip:Show()
 end
 
@@ -933,7 +940,7 @@ function EnsureSlotCard(index)
 	card.nameText:SetWidth(CARD_WIDTH - 8)
 	card.nameText:SetJustifyH("CENTER")
 
-	-- GearScore (see the lookup section further down this file) - blank/"GS --" until a
+	-- GearScore (see Inspect.lua) - blank/"GS --" until a
 	-- lookup succeeds.
 	card.gsText = card:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	card.gsText:SetPoint("BOTTOM", 0, 5)
@@ -1060,7 +1067,7 @@ function SetCardState(card, slot, matchedName, matchedClass, isClassRun)
 			card.gsText:Show()
 
 			-- SetShown doesn't exist on this client - only Show()/Hide() do.
-			local entry = JohnnysRaidComp.db.global.raidCompGearScores[matchedName]
+			local entry = JohnnysRaidComp.db.realm.raidCompGearScores[matchedName]
 			if entry and entry.hasPvpGear then
 				card.pvpBadge:Show()
 			else
@@ -1178,7 +1185,7 @@ function EnsureBenchChip(index)
 	chip.nameText:SetWidth(BENCH_CHIP_WIDTH - 6)
 	chip.nameText:SetJustifyH("CENTER")
 
-	-- Compact GearScore (see the lookup section further down this file) - "--" until a lookup
+	-- Compact GearScore (see Inspect.lua) - "--" until a lookup
 	-- succeeds.
 	chip.gsText = chip:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 	chip.gsText:SetPoint("BOTTOM", 0, 3)
@@ -1217,7 +1224,7 @@ function SetBenchChipState(chip, name, class)
 	-- able to break the chip itself if something about that goes wrong.
 	local ok = pcall(function()
 		local gsText, r, g, b = FormatCompactGearScoreText(name)
-		local entry = JohnnysRaidComp.db.global.raidCompGearScores[name]
+		local entry = JohnnysRaidComp.db.realm.raidCompGearScores[name]
 		if entry and entry.hasPvpGear then
 			chip.gsText:SetText("PvP " .. gsText)
 			chip.gsText:SetTextColor(0.85, 0.3, 0.85)
@@ -1250,7 +1257,7 @@ end
 local VH_PREFIX = "Not yet inspected - please come to Violet Hold (VH) for a gear check: "
 
 function RaidCompUI:GetUninspectedNames()
-	local cache = JohnnysRaidComp.db.global.raidCompGearScores
+	local cache = JohnnysRaidComp.db.realm.raidCompGearScores
 	local names = {}
 	for _, member in ipairs(self:ScanRoster()) do
 		local entry = cache[member.name]
@@ -1381,7 +1388,7 @@ local function RefreshNeedBar(template, matches, roster)
 		needText:SetText("Every slot is filled.")
 	end
 
-	local cache = JohnnysRaidComp.db.global.raidCompGearScores
+	local cache = JohnnysRaidComp.db.realm.raidCompGearScores
 	local total, count, lowScore, lowName = 0, 0, nil, nil
 	for _, member in ipairs(roster) do
 		local entry = cache and cache[member.name]
@@ -1454,15 +1461,14 @@ function RaidCompUI:RefreshComp()
 	currentMatches = matches
 
 	-- Kick off/refresh a GearScore+PVP-gear lookup for everyone currently
-	-- shown (slotted or benched) - see the lookup section further down this
-	-- file. No-ops
+	-- shown (slotted or benched) - see Inspect.lua. No-ops
 	-- for anyone already fresh or already queued. pcall'd as a hard boundary -
 	-- inspect/item-cache reads can fail in odd ways, and they must never be
 	-- able to take the actual comp grid down with it.
 	local ok, err = pcall(function()
 		for _, member in ipairs(roster) do
 			self:RequestGearScore(member.name, member.unit)
-			-- Separate queue (see the achievement lookup section) - no-ops if
+			-- Separate queue (see Achievements.lua) - no-ops if
 			-- the tooltip option is off.
 			self:RequestAchievements(member.name, member.unit)
 		end
@@ -2306,7 +2312,11 @@ local function BuildFrame()
 	local pos = JohnnysRaidComp.db.profile.raidCompPanelPosition
 	mainFrame:SetPoint(pos.point, UIParent, pos.relativePoint, pos.x, pos.y)
 
-	mainFrame:SetFrameStrata("DIALOG")
+	-- HIGH, not DIALOG: the kick confirmation (a StaticPopup, DIALOG strata)
+	-- must always open above this window, never behind it.
+	mainFrame:SetFrameStrata("HIGH")
+	mainFrame:SetClampedToScreen(true) -- can't be dragged off-screen and lost
+	table.insert(UISpecialFrames, "JohnnysAddonHubRaidCompFrame") -- Esc closes it
 	mainFrame:SetMovable(true)
 	mainFrame:EnableMouse(true)
 	mainFrame:RegisterForDrag("LeftButton")
@@ -2424,347 +2434,6 @@ RaidCompUI.OnGearScoreUpdated = function(name)
 end
 
 ----------------------------------------------------------------------------
--- GearScore/PVP-gear lookup. The score math is our own GearScoreLite-
--- compatible formula (Modules\GearScore.lua), so GearScoreLite doesn't need
--- to be installed. It only reads whatever gear the client can currently see,
--- and a first read right after NotifyInspect is very often empty because the
--- server's inspect data hasn't arrived on the client yet (or an item isn't
--- in the item cache). What follows owns the request/response flow: a
--- throttled NotifyInspect queue, a couple of short retries when a read comes
--- back empty, resilience detection (our own hidden scan tooltip - see
--- ItemHasResilience), and a highest-score-ever-seen cache in db.global so a lucky
--- earlier read survives an unlucky later one (and survives a /reload, since
--- it's not tied to whichever of your own characters did the inspecting).
---
--- (This lived in its own Modules\RaidCompUI\Inspect.lua file originally, but
--- that file was silently never loading - the .toc listed it correctly and
--- its contents were valid, but nothing in it, not even a bare print(), ever
--- ran, even after a full character-select relog. Folded in here instead,
--- since UI.lua is proven to load reliably.)
-----------------------------------------------------------------------------
-
-local GS_REQUEST_INTERVAL = 1 -- min seconds between outgoing NotifyInspect calls
-local GS_STALE_SECONDS = 300 -- re-request a cached entry after this long
-local GS_RETRY_DELAY = 0.75
-local GS_MAX_RETRIES = 3
-
--- Equippable slots the GearScore formula reads (1-18, skipping 4 = shirt), and
--- the slot's display name for the PVP-piece list shown in the tooltip.
-local GS_SLOT_NAMES = {
-	[1] = "Head", [2] = "Neck", [3] = "Shoulder", [5] = "Chest", [6] = "Waist",
-	[7] = "Legs", [8] = "Feet", [9] = "Wrist", [10] = "Hands", [11] = "Ring",
-	[12] = "Ring", [13] = "Trinket", [14] = "Trinket", [15] = "Back",
-	[16] = "Main Hand", [17] = "Off Hand", [18] = "Ranged",
-}
-
-local gsRequestQueue = {} -- ordered list of {name=, unit=}
--- [name] = true for the *entire* lifetime of a lookup - from RequestGearScore
--- accepting it, through however many retries, until ResolveScore finally
--- either stores a result or gives up. Prevents RefreshComp (which calls
--- RequestGearScore for the whole roster on every repaint, including the
--- repaint a finished lookup itself triggers) from piling up duplicate
--- requests for someone whose lookup is already in flight.
-local gsInFlight = {}
-local gsPendingGuid = {} -- [guid] = {name=, unit=}, so INSPECT_READY can find its request
-local gsRetries = {} -- [name] = zero-score attempts so far for the current inspect
-local gsRetryQueue = {} -- ordered list of {name=, unit=, fireAt=}
-
-local function GSGetCache()
-	return JohnnysRaidComp.db.global.raidCompGearScores
-end
-
-local function GSIsFresh(name)
-	local entry = GSGetCache()[name]
-	-- time(), not GetTime(): the cache is saved between sessions and GetTime()
-	-- restarts with the PC, which made old entries look fresh forever. A stamp
-	-- in the future (clock change) counts as stale too.
-	if not (entry and entry.updatedAt) then
-		return false
-	end
-	local age = time() - entry.updatedAt
-	return age >= 0 and age < GS_STALE_SECONDS
-end
-
--- Only ever called with a genuine, complete reading (GSResolveScoreBody
--- already retries a 0/empty read up to GS_MAX_RETRIES before giving up
--- without ever calling this) - so the new value always replaces the old one,
--- reflecting whatever the player currently has equipped. Earlier this kept
--- the highest score ever seen instead, on the theory that a low/zero read
--- meant a bad inspect - but that also meant a real re-gear (say, PvE gear
--- swapped for a lower-scoring PvP set) could never show, since the old
--- higher score would stick forever. The retry-until-valid logic above is
--- what actually solves "first inspect often reads 0"; this just trusts
--- whatever it hands back.
-function RaidCompUI:StoreGearScore(name, score, avgIlvl, hasPvpGear, pvpSlots)
-	local cache = GSGetCache()
-	local entry = cache[name]
-	if not entry then
-		entry = {}
-		cache[name] = entry
-	end
-
-	local oldScore = entry.score
-
-	if score and score > 0 then
-		entry.score = score
-		entry.avgIlvl = avgIlvl
-	end
-	entry.hasPvpGear = hasPvpGear
-	entry.pvpSlots = pvpSlots
-	entry.updatedAt = time()
-
-	-- Flag a genuine change so gsFlashPump pulses this member's box until the
-	-- leader acknowledges it. A first-ever reading (oldScore == nil) is not a
-	-- "change" and doesn't flash - see the plan/user decision.
-	if score and score > 0 and oldScore and oldScore ~= score then
-		gsChanged[name] = true
-	end
-
-	if RaidCompUI.OnGearScoreUpdated then
-		RaidCompUI.OnGearScoreUpdated(name)
-	end
-end
-
--- 3.3.5a has no GetItemStats, so resilience is read the way Pawn does it:
--- render the item into a hidden tooltip and pattern-match its lines.
--- English-client text, like the rest of the addon.
-local pvpScanTooltip = CreateFrame("GameTooltip", "JohnnysRaidCompScanTooltip", nil, "GameTooltipTemplate")
-local RESILIENCE_PATTERNS = {
-	"Improves your resilience rating by %d+",
-	"Increases your resilience rating by %d+",
-}
-
--- True if an item's own stats include resilience. "Use:"/proc lines are
--- skipped so a temporary effect doesn't flag a PvE item.
-local function ItemHasResilience(link)
-	pvpScanTooltip:SetOwner(UIParent, "ANCHOR_NONE")
-	pvpScanTooltip:ClearLines()
-	pvpScanTooltip:SetHyperlink(link)
-	for i = 2, pvpScanTooltip:NumLines() do
-		local fontString = _G["JohnnysRaidCompScanTooltipTextLeft" .. i]
-		local text = fontString and fontString:GetText()
-		if text and not (text:find("^Use:") or text:find("Chance on") or text:find(" for %d+ sec")) then
-			for _, pattern in ipairs(RESILIENCE_PATTERNS) do
-				if text:find(pattern) then
-					return true
-				end
-			end
-		end
-	end
-	return false
-end
-
--- Scans the (now-inspected) unit's equipped gear for a resilience line (see
--- ItemHasResilience). Also reports whether any equipped-item data was
--- actually readable yet, so callers can tell "no PVP gear" apart from
--- "inspect data hasn't arrived".
-local function GSScanPvpGear(unit)
-	local hasPvp, slots, sawAnyItem = false, {}, false
-	for slotId, slotName in pairs(GS_SLOT_NAMES) do
-		local link = GetInventoryItemLink(unit, slotId)
-		if link then
-			sawAnyItem = true
-			if ItemHasResilience(link) then
-				hasPvp = true
-				slots[slotName] = true
-			end
-		end
-	end
-	return hasPvp, slots, sawAnyItem
-end
-
--- The request behind the most recent NotifyInspect ({name=, unit=, at=}) - the
--- only player INSPECT_TALENT_READY can be about, since that event carries no
--- name or GUID on 3.3.5a.
-local gsLastInspect
-
--- INSPECT_TALENT_READY: the inspected player's talents are readable now, so
--- work out their real role (see DetectSpecRole) and remember it. If that
--- differs from what they were placed by - usually the class guess - the comp
--- is repainted and BuildMatches moves them to a slot of their real role.
--- Ignored when it can't be tied to our own request: too long after it, the
--- unit has changed, or the talent data is for another class (another addon's
--- inspect answered instead).
-local function GSStoreRole()
-	local request = gsLastInspect
-	if not request or GetTime() - request.at > 3 then
-		return
-	end
-	if not (UnitExists(request.unit) and UnitName(request.unit) == request.name) then
-		return
-	end
-	local _, class = UnitClass(request.unit)
-	local ok, role, spec = pcall(DetectSpecRole, class, true)
-	if not ok or not role then
-		return
-	end
-
-	local known = JohnnysRaidComp.db.global.raidCompRoles
-	local old = known[request.name]
-	-- time(), not GetTime(), since this is saved between sessions.
-	known[request.name] = { role = role, spec = spec, class = class, at = time() }
-	if (not old or old.role ~= role or old.spec ~= spec) and RaidCompUI:IsShowingComp() then
-		RaidCompUI:RefreshComp()
-	end
-end
-
-local function GSQueueRetry(name, unit)
-	table.insert(gsRetryQueue, { name = name, unit = unit, fireAt = GetTime() + GS_RETRY_DELAY })
-end
-
--- The actual body, pcall'd by GSResolveScore below - the score read and
--- ItemHasResilience both depend on inspect/item-cache data and item
--- tooltip rendering, and a failure there must never get to spam
--- errors from the OnUpdate pump or leave `gsInFlight[name]` stuck true
--- forever (which would silently stop that player from ever being looked up
--- again this session).
-local function GSResolveScoreBody(name, unit)
-	if not (UnitExists(unit) and UnitName(unit) == name) then
-		gsInFlight[name] = nil
-		gsRetries[name] = nil
-		return
-	end
-
-	local score, avgIlvl, incomplete = JohnnysRaidComp.GearScore:GetScore(unit)
-	local hasPvp, pvpSlots, sawAnyItem = GSScanPvpGear(unit)
-
-	-- Retry an empty read, or one where some item wasn't in the item cache yet
-	-- (its score would be too low). Giving up stores nothing, so the next
-	-- RefreshComp simply requests a fresh inspect.
-	if incomplete or (not sawAnyItem and (not score or score == 0)) then
-		if (gsRetries[name] or 0) < GS_MAX_RETRIES then
-			gsRetries[name] = (gsRetries[name] or 0) + 1
-			GSQueueRetry(name, unit)
-		else
-			gsInFlight[name] = nil
-			gsRetries[name] = nil
-		end
-		return
-	end
-
-	gsInFlight[name] = nil
-	gsRetries[name] = nil
-	RaidCompUI:StoreGearScore(name, score, avgIlvl, hasPvp, pvpSlots)
-end
-
--- Reads back the GearScore + the PVP scan for a unit that should now
--- have inspect data available. Called from two places for the same pending
--- request - the INSPECT_READY handler, and a fallback retry timer queued
--- right after every NotifyInspect (in case INSPECT_READY never fires, e.g.
--- the target leaves inspect range mid-request) - so the gsInFlight check up
--- front makes whichever one loses the race a harmless no-op.
-local function GSResolveScore(name, unit)
-	if not gsInFlight[name] then
-		return
-	end
-
-	local ok, err = pcall(GSResolveScoreBody, name, unit)
-	if not ok then
-		gsInFlight[name] = nil
-		gsRetries[name] = nil
-		geterrorhandler()(err)
-	end
-end
-
--- Queues a unit for an inspect-driven GearScore/PVP-gear lookup. Safe to call
--- repeatedly (e.g. every RefreshComp, including the repaint a finished lookup
--- itself triggers) - skips anyone already in flight or still fresh.
-function RaidCompUI:RequestGearScore(name, unit)
-	if not (name and unit and UnitExists(unit)) then
-		return
-	end
-	if gsInFlight[name] or GSIsFresh(name) then
-		return
-	end
-
-	gsInFlight[name] = true
-	table.insert(gsRequestQueue, { name = name, unit = unit })
-end
-
--- Wipes the cached entry and every in-flight guard/queue slot for `name` so a
--- following RequestGearScore isn't skipped (gsInFlight/GSIsFresh) or beaten by a
--- stale pending inspect. Shared by the single-member Ctrl+click path and the
--- whole-roster "Re-scan all GS" button below.
-local function GSClearPending(name)
-	GSGetCache()[name] = nil
-	gsInFlight[name] = nil
-	gsRetries[name] = nil
-	gsChanged[name] = nil
-	for i = #gsRequestQueue, 1, -1 do
-		if gsRequestQueue[i].name == name then
-			table.remove(gsRequestQueue, i)
-		end
-	end
-	for i = #gsRetryQueue, 1, -1 do
-		if gsRetryQueue[i].name == name then
-			table.remove(gsRetryQueue, i)
-		end
-	end
-	for guid, req in pairs(gsPendingGuid) do
-		if req.name == name then
-			gsPendingGuid[guid] = nil
-		end
-	end
-end
-
--- Manual "this reading looks wrong, do it again" - bound to Ctrl+click on any
--- slot card / bench chip (see OnCardClick / OnBenchClick). Clears the member's
--- cached score + guards, then re-queues a fresh lookup against their current
--- unit token. Generalises the same reset the INSPECT_READY frame already does
--- for PLAYER_EQUIPMENT_CHANGED on your own name.
-function RaidCompUI:ForceRescanGearScore(name)
-	if not name then
-		return
-	end
-	-- Achievements re-scan too - the RefreshComp below re-requests them.
-	AchClearPending(name)
-
-	GSClearPending(name)
-
-	for _, member in ipairs(self:ScanRoster()) do
-		if member.name == name then
-			self:RequestGearScore(name, member.unit)
-			break
-		end
-	end
-
-	if reportVHStatus then
-		reportVHStatus:SetText("Re-scanning " .. name .. "...")
-	end
-	-- Repaint so the box drops back to "GS --" immediately; the result lands via
-	-- the normal INSPECT_READY -> StoreGearScore -> OnGearScoreUpdated path.
-	if RaidCompUI:IsShowingComp() then
-		RaidCompUI:RefreshComp()
-	end
-end
-
--- Whole-roster version, bound to the comp page's "Re-scan all GS" button - so
--- the leader can force a fresh sweep without closing and reopening the window
--- (which only re-requests uncached/stale members, not a true refresh). Clears
--- every current roster member's cached score + guards and re-queues them; the
--- gsPump throttle then spaces the NotifyInspect calls out at GS_REQUEST_INTERVAL
--- as usual, so a full 25-man repopulates over ~25s.
-function RaidCompUI:RescanAllGearScores()
-	local roster = self:ScanRoster()
-	-- Achievements re-scan too (see ForceRescanGearScore above).
-	for _, member in ipairs(roster) do
-		AchClearPending(member.name)
-	end
-
-	for _, member in ipairs(roster) do
-		GSClearPending(member.name)
-		self:RequestGearScore(member.name, member.unit)
-	end
-
-	if reportVHStatus then
-		reportVHStatus:SetText(string.format("Re-scanning all %d member(s)...", #roster))
-	end
-	if RaidCompUI:IsShowingComp() then
-		RaidCompUI:RefreshComp()
-	end
-end
-
-----------------------------------------------------------------------------
 -- Flash pump - drives the amber "GearScore changed" pulse on any currently-
 -- shown box whose member is still in gsChanged (unacknowledged). Cheap
 -- early-out when nothing is pending; otherwise it's at most ~25 cards + ~12
@@ -2793,632 +2462,15 @@ gsFlashPump:SetScript("OnUpdate", function()
 end)
 
 ----------------------------------------------------------------------------
--- Pump - a single OnUpdate ticker drives both the outgoing request queue
--- (throttled to GS_REQUEST_INTERVAL so we don't hammer the client's own
--- inspect cooldown) and any scheduled retries. Same manual-accumulator style
--- as Init.lua's roster debounce and GearUpgrade\UI.lua's item-info retry
--- ticker - 3.3.5a has no embedded AceTimer, so everything here is polled.
+-- Hooks for Inspect.lua and Achievements.lua, which load after this file.
 ----------------------------------------------------------------------------
-local gsPump = CreateFrame("Frame")
-local gsSinceLastRequest = GS_REQUEST_INTERVAL
-gsPump:SetScript("OnUpdate", function(self, elapsed)
-	gsSinceLastRequest = gsSinceLastRequest + elapsed
+-- The tooltip a finished achievement scan redraws if it's still open.
+RaidCompUI.ShowGearScoreTooltip = ShowGearScoreTooltip
 
-	-- Stand aside while the player has someone's Inspect window open - our
-	-- NotifyInspect on another member would swap the gear it's showing.
-	local inspectOpen = InspectFrame and InspectFrame:IsShown()
-
-	if not inspectOpen and gsSinceLastRequest >= GS_REQUEST_INTERVAL and #gsRequestQueue > 0 then
-		local request = table.remove(gsRequestQueue, 1)
-		if UnitExists(request.unit) and UnitName(request.unit) == request.name and CanInspect(request.unit) then
-			gsSinceLastRequest = 0
-			gsPendingGuid[UnitGUID(request.unit)] = request
-			gsLastInspect = { name = request.name, unit = request.unit, at = GetTime() }
-			NotifyInspect(request.unit)
-			GSQueueRetry(request.name, request.unit) -- safety net if INSPECT_READY never fires
-		else
-			-- Out of inspect range/can't be inspected right now - drop it;
-			-- the next RefreshComp will naturally re-request them since
-			-- nothing was ever stored for this attempt.
-			gsInFlight[request.name] = nil
-		end
+-- The small status line above the footer buttons ("Re-scanning Bob...").
+-- Does nothing until the window has been built.
+function RaidCompUI:SetStatus(text)
+	if reportVHStatus then
+		reportVHStatus:SetText(text)
 	end
-
-	if #gsRetryQueue > 0 then
-		local now = GetTime()
-		local i = 1
-		while i <= #gsRetryQueue do
-			local retry = gsRetryQueue[i]
-			if now >= retry.fireAt then
-				table.remove(gsRetryQueue, i)
-				GSResolveScore(retry.name, retry.unit)
-			else
-				i = i + 1
-			end
-		end
-	end
-end)
-
-local gsInspectFrame = CreateFrame("Frame")
-gsInspectFrame:RegisterEvent("INSPECT_READY")
--- Talents of the player we just inspected - their real role (see GSStoreRole).
-gsInspectFrame:RegisterEvent("INSPECT_TALENT_READY")
--- Own gear swap (e.g. PvE -> PvP set before a raid) - re-check immediately
--- rather than waiting out GS_STALE_SECONDS, since this is the one case where
--- we know for certain the cached reading is now out of date.
-gsInspectFrame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
-gsInspectFrame:SetScript("OnEvent", function(self, event, guid)
-	if event == "INSPECT_TALENT_READY" then
-		-- This is the inspect answer on 3.3.5a (INSPECT_READY with a GUID only
-		-- exists on later clients, so that path below never runs here). With
-		-- the player's own Inspect window open it's the answer to their
-		-- inspect, not ours.
-		if InspectFrame and InspectFrame:IsShown() then
-			return
-		end
-		GSStoreRole()
-		-- Read the score now instead of waiting for the fallback timer, and
-		-- drop that timer so the same request isn't resolved twice.
-		local request = gsLastInspect
-		if request and GetTime() - request.at <= 3 and gsInFlight[request.name] then
-			for i = #gsRetryQueue, 1, -1 do
-				if gsRetryQueue[i].name == request.name then
-					table.remove(gsRetryQueue, i)
-				end
-			end
-			GSResolveScore(request.name, request.unit)
-		end
-		return
-	end
-	if event == "PLAYER_EQUIPMENT_CHANGED" then
-		local cache = GSGetCache()
-		cache[UnitName("player")] = nil
-		if RaidCompUI:IsShowingComp() then
-			RaidCompUI:RefreshComp()
-		end
-		return
-	end
-
-	local request = gsPendingGuid[guid]
-	if not request then
-		return
-	end
-	gsPendingGuid[guid] = nil
-	GSResolveScore(request.name, request.unit)
-end)
-
-----------------------------------------------------------------------------
--- Achievement/kill-count lookup, shown in the same tooltip as GearScore (see
--- AddAchievementLines / ShowGearScoreTooltip). 3.3.5a's only way to read
--- another player's achievements is the comparison API the Blizzard
--- Achievements "Compare" tab uses: SetAchievementComparisonUnit(unit) asks the
--- server, INSPECT_ACHIEVEMENT_READY fires (with no guid to say whose data it
--- is), then GetAchievementComparisonInfo / GetComparisonStatistic read it and
--- ClearAchievementComparisonUnit releases it. There's only ONE comparison slot
--- client-wide, so this runs strictly one request at a time, separate from the
--- NotifyInspect queue above, and stands aside entirely while the Blizzard
--- compare frame is open so it never clobbers a compare the user started.
---
--- Each scan reads every ID for every raid in RAID_ACHIEVEMENTS (not just the
--- selected one), so switching raids in the picker needs no re-scan. Gated on
--- db.profile.showAchievementTooltip - off means no scans and no tooltip lines.
-----------------------------------------------------------------------------
-
--- Pacing is measured from the previous request FINISHING (answered or timed
--- out), not from it being sent: the gap starts at ACH_MIN_GAP, doubles (up to
--- ACH_MAX_GAP) whenever a request times out - in case the server throttles
--- rapid comparison requests - and eases back down on each answer.
-local ACH_MIN_GAP = 0.3
-local ACH_MAX_GAP = 2
-local ACH_TIMEOUT = 2.5 -- give up on a request whose READY never came
-local ACH_STALE_SECONDS = 3600 -- re-request a cached entry after this long (time() based)
--- Bump whenever what a scan reads changes, so saved entries from an older
--- scan are treated as missing and re-scanned. 2 = kill-stat matching fix,
--- 3 = first-boss stats for the runs/clears line, 4 = KILL_STAT_ALIASES.
-local ACH_DATA_VERSION = 4
-
-local ACH_ICON_DONE = "|TInterface\\RaidFrame\\ReadyCheck-Ready:0|t "
-local ACH_ICON_MISSING = "|TInterface\\RaidFrame\\ReadyCheck-NotReady:0|t "
-
--- Size whose achievements also satisfy this size's (see AddAchievementLines).
-local ACH_25_COUNTERPART = { ["10"] = "25", ["10H"] = "25H" }
-
-local achQueue = {} -- ordered list of {name=, unit=}
-local achInFlight = {} -- [name] = true from RequestAchievements until stored/dropped
-local achPending = nil -- the one outstanding {name=, unit=, sentAt=}
-
-local function AchGetCache()
-	return JohnnysRaidComp.db.global.raidCompAchievements
-end
-
--- A member's cached entry, or nil if missing or from an older scan version.
-local function AchGetEntry(name)
-	local entry = AchGetCache()[name]
-	if entry and entry.v == ACH_DATA_VERSION then
-		return entry
-	end
-	return nil
-end
-
-function RaidCompUI:IsAchievementTooltipEnabled()
-	return JohnnysRaidComp.db and JohnnysRaidComp.db.profile.showAchievementTooltip and true or false
-end
-
-local function BlizzCompareOpen()
-	return AchievementFrameComparison and AchievementFrameComparison:IsShown()
-end
-
--- CLASSRUN has no size-specific achievements of its own - use the 10s.
-local function AchSpecFor(raidKey, sizeKey)
-	local spec = raidKey and RaidCompUI.RAID_ACHIEVEMENTS[raidKey]
-	if not spec then
-		return nil
-	end
-	if sizeKey == "CLASSRUN" then
-		sizeKey = "10"
-	end
-	return spec, sizeKey
-end
-
--- Every statistic the client knows about, as { {id=, name=}, ... }, built on
--- first use. Not cached while empty, in case it's asked before the client has
--- its achievement data loaded.
-local achStatIndex
-local function AchStatIndex()
-	if achStatIndex then
-		return achStatIndex
-	end
-	local list = {}
-	if GetStatisticsCategoryList then
-		for _, cat in ipairs(GetStatisticsCategoryList() or {}) do
-			for i = 1, (GetCategoryNumAchievements(cat) or 0) do
-				local id, name = GetAchievementInfo(cat, i)
-				if id and name then
-					table.insert(list, { id = id, name = name })
-				end
-			end
-		end
-	end
-	if #list > 0 then
-		achStatIndex = list
-	end
-	return list
-end
-
--- Finds the "<boss> kills (<instance> NN player)" statistic for a size key
--- ("10"/"10H"/"25"/"25H") by name - heroic variants say "Heroic ..." (ICC/RS)
--- or "Grand Crusader" (ToC). The boss name must be BEFORE the parentheses and
--- the size/difficulty INSIDE them: the expansion-wide stats like "Lich King
--- 25-player raids completed (final boss killed)" also contain "Lich King",
--- "25-player" and "kill", and matching them showed all WotLK 25-man clears as
--- Lich King kills. Heroic-ness is checked across the whole name, since some
--- say it outside the parentheses ("Times completed the Trial of the Grand
--- Crusader (10 player)"). A boss with KILL_STAT_ALIASES (see Data.lua) also
--- matches those alternate names. Prefers names containing "kill", falling
--- back to any other boss+size match (e.g. "Victories over ..."). Cached,
--- misses too.
-local achStatCache = {}
-local function ResolveKillStat(boss, sizeKey)
-	local cacheKey = boss .. "|" .. sizeKey
-	if achStatCache[cacheKey] ~= nil then
-		return achStatCache[cacheKey] or nil
-	end
-	local index = AchStatIndex()
-	if #index == 0 then
-		return nil
-	end
-
-	local needles = { boss }
-	for _, alias in ipairs(RaidCompUI.KILL_STAT_ALIASES[boss] or {}) do
-		table.insert(needles, alias)
-	end
-
-	local sizePattern = sizeKey:sub(1, 2) .. "[%s%-]player"
-	local wantHeroic = sizeKey:find("H", 1, true) ~= nil
-	local fallback
-	for _, stat in ipairs(index) do
-		local name = stat.name
-		local before, inParens = name:match("^(.-)%s*%((.-)%)%s*$")
-		if before and inParens:find(sizePattern) then
-			local bossMatch = false
-			for _, needle in ipairs(needles) do
-				if before:find(needle, 1, true) then
-					bossMatch = true
-					break
-				end
-			end
-			local isHeroic = name:find("Heroic", 1, true) ~= nil or name:find("Grand Crusader", 1, true) ~= nil
-			if bossMatch and isHeroic == wantHeroic then
-				if before:lower():find("kill", 1, true) then
-					achStatCache[cacheKey] = stat.id
-					return stat.id
-				end
-				fallback = fallback or stat.id
-			end
-		end
-	end
-	achStatCache[cacheKey] = fallback or false
-	return fallback
-end
-
--- Every boss whose kill statistic a scan should read for `spec`: the
--- tooltip's kill-count bosses plus its `runs` first/last bosses, deduped.
-local function AchAllBosses(spec)
-	local list, seen = {}, {}
-	local function add(boss)
-		if boss and not seen[boss] then
-			seen[boss] = true
-			table.insert(list, boss)
-		end
-	end
-	for _, boss in ipairs(spec.bosses or {}) do
-		add(boss)
-	end
-	if spec.runs then
-		for _, boss in ipairs(spec.runs.first or {}) do
-			add(boss)
-		end
-		add(spec.runs.last)
-	end
-	return list
-end
-
--- A scanned member's kill count for boss+size as a number (the API gives
--- "--" for none), or nil if this client has no such statistic at all.
-local function AchKills(entry, boss, sizeKey)
-	local statId = ResolveKillStat(boss, sizeKey)
-	if not statId then
-		return nil
-	end
-	return tonumber(entry.stats[statId]) or 0
-end
-
--- One labelled row per size of the raid (see RAID_ACHIEVEMENTS' `runs` for
--- what counts as a run vs a clear), the selected size marked and in white:
---   Runs                      (selected size marked with >)
---   > 25-Man            12 runs, 3 cleared
---     25-Man Heroic                  none
--- Sizes where no statistic resolved at all are left out; a clears statistic
--- that didn't resolve shows as "?" rather than hiding the run count.
-local function AchAddRunLines(entry, spec, raidKey, selectedSize)
-	local runs = spec.runs
-	if not runs then
-		return
-	end
-	local rows = {}
-	for _, sizeKey in ipairs(RaidCompUI.RAID_SIZE_ORDER[raidKey] or {}) do
-		local runCount
-		for _, boss in ipairs(runs.first or {}) do
-			local kills = AchKills(entry, boss, sizeKey)
-			if kills then
-				runCount = math.max(runCount or 0, kills)
-			end
-		end
-		local clears = runs.last and AchKills(entry, runs.last, sizeKey)
-		if clears then
-			runCount = math.max(runCount or 0, clears)
-		end
-
-		if runCount then
-			local value
-			if runCount == 0 then
-				value = "none"
-			elseif not runs.first then
-				value = string.format("%d kill%s", runCount, runCount == 1 and "" or "s") -- single-boss raid
-			elseif not runs.last then
-				value = string.format("%d run%s", runCount, runCount == 1 and "" or "s") -- VoA: no boss order
-			else
-				value = string.format("%d run%s, %s cleared", runCount, runCount == 1 and "" or "s", clears and tostring(clears) or "?")
-			end
-			table.insert(rows, { sizeKey = sizeKey, value = value, zero = runCount == 0 })
-		end
-	end
-	if #rows == 0 then
-		return
-	end
-
-	-- Every size reporting the exact same non-zero count means the server
-	-- isn't splitting that raid's statistics by size/difficulty (seen with
-	-- ToC: 137/116 on all four, heroics never run) - one combined row, instead
-	-- of four rows claiming runs that never happened.
-	local allSame = #rows > 1 and not rows[1].zero
-	for i = 2, #rows do
-		if rows[i].value ~= rows[1].value then
-			allSame = false
-			break
-		end
-	end
-	if allSame then
-		GameTooltip:AddLine("Runs", 1, 0.82, 0)
-		GameTooltip:AddDoubleLine("   All sizes combined", rows[1].value, 1, 1, 1, 1, 1, 1)
-		GameTooltip:AddLine("   (server doesn't split this raid's stats by size)", 0.6, 0.6, 0.6)
-		return
-	end
-
-	GameTooltip:AddLine("Runs", 1, 0.82, 0)
-	for _, row in ipairs(rows) do
-		local label = RaidCompUI.SIZE_LABELS[row.sizeKey] or row.sizeKey
-		if row.sizeKey == selectedSize then
-			GameTooltip:AddDoubleLine("> " .. label, row.value, 1, 1, 1, row.zero and 0.6 or 1, row.zero and 0.6 or 1, row.zero and 0.6 or 1)
-		else
-			GameTooltip:AddDoubleLine("   " .. label, row.value, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6)
-		end
-	end
-end
-
--- Tooltip section for the currently selected raid/size - called from every
--- exit path of ShowGearScoreTooltip.
-function AddAchievementLines(name)
-	if not RaidCompUI:IsAchievementTooltipEnabled() then
-		return
-	end
-	local raidKey, rawSize = RaidCompUI:GetSelectedRaid()
-	local spec, sizeKey = AchSpecFor(raidKey, rawSize)
-	if not spec then
-		return
-	end
-
-	GameTooltip:AddLine(" ")
-	GameTooltip:AddLine(string.format("Achievements (%s %s):", RaidCompUI.RAID_LABELS[raidKey] or raidKey,
-		RaidCompUI.SIZE_LABELS[sizeKey] or sizeKey), 1, 0.82, 0)
-
-	local entry = AchGetEntry(name)
-	if not entry then
-		if achInFlight[name] then
-			-- Being hovered = wanted now: jump the queue (if not already sent).
-			for i = 2, #achQueue do
-				if achQueue[i].name == name then
-					table.insert(achQueue, 1, table.remove(achQueue, i))
-					break
-				end
-			end
-			GameTooltip:AddLine("scanning...", 0.6, 0.6, 0.6)
-		else
-			GameTooltip:AddLine("not yet scanned (out of range?)", 0.6, 0.6, 0.6)
-		end
-		return
-	end
-
-	-- On a 10-man, the 25-man version of the same achievement counts too -
-	-- matched by position, since each raid's 10/25 lists in RAID_ACHIEVEMENTS
-	-- are kept parallel.
-	local upSize = ACH_25_COUNTERPART[sizeKey]
-	local upIds = upSize and spec[upSize]
-
-	for i, id in ipairs(spec[sizeKey] or {}) do
-		local _, achName = GetAchievementInfo(id)
-		if achName then
-			local upId = upIds and upIds[i]
-			if entry.ach[id] then
-				GameTooltip:AddLine(ACH_ICON_DONE .. achName, 0.3, 1, 0.3)
-			elseif upId and entry.ach[upId] then
-				GameTooltip:AddLine(ACH_ICON_DONE .. achName .. " (via 25-man)", 0.3, 1, 0.3)
-			else
-				GameTooltip:AddLine(ACH_ICON_MISSING .. achName, 0.6, 0.6, 0.6)
-			end
-		end
-	end
-
-	-- Per-boss kill lines only where the Runs rows don't already say it -
-	-- i.e. VoA, whose bosses have no order (so no "cleared" count).
-	if not (spec.runs and spec.runs.last) then
-		for _, boss in ipairs(spec.bosses or {}) do
-			local kills = AchKills(entry, boss, sizeKey)
-			if kills then
-				if kills > 0 then
-					GameTooltip:AddLine(string.format("%s kills: %d", boss, kills), 1, 1, 1)
-				else
-					GameTooltip:AddLine(string.format("%s kills: 0", boss), 0.6, 0.6, 0.6)
-				end
-			end
-		end
-	end
-
-	AchAddRunLines(entry, spec, raidKey, sizeKey)
-end
-
--- `/jrc statsearch <text>` - every statistic this client has whose name
--- contains <text> (case-insensitive), with its ID. For finding what a
--- server actually calls a boss's kill statistic when /jrc achcheck says
--- NOT FOUND or a count looks wrong.
-function RaidCompUI:PrintStatSearch(text)
-	local out = DEFAULT_CHAT_FRAME
-	text = (text or ""):lower()
-	if text == "" then
-		out:AddMessage("|cff66ccffJohnny's Raid Comp|r: /jrc statsearch <part of a name>, e.g. /jrc statsearch crusade")
-		return
-	end
-	local found = 0
-	for _, stat in ipairs(AchStatIndex()) do
-		if stat.name:lower():find(text, 1, true) then
-			found = found + 1
-			out:AddMessage(string.format("  %d  %s", stat.id, stat.name))
-		end
-	end
-	out:AddMessage(string.format("|cff66ccffJohnny's Raid Comp|r: %d statistic(s) matching \"%s\"", found, text))
-end
-
--- Queues a member for an achievement comparison. Safe to call on every
--- RefreshComp - skips anyone already in flight or still fresh, and does
--- nothing while the option is off.
-function RaidCompUI:RequestAchievements(name, unit)
-	if not (self:IsAchievementTooltipEnabled() and SetAchievementComparisonUnit and name and unit and UnitExists(unit)) then
-		return
-	end
-	if achInFlight[name] then
-		return
-	end
-	local entry = AchGetEntry(name)
-	if entry and entry.updatedAt and (time() - entry.updatedAt) < ACH_STALE_SECONDS then
-		return
-	end
-	achInFlight[name] = true
-	table.insert(achQueue, { name = name, unit = unit })
-end
-
--- Same role as GSClearPending, for the Ctrl+click / "Re-scan all GS" paths.
--- If this member's comparison is the one outstanding right now, it's left
--- in flight - fresh data is already on its way.
-function AchClearPending(name)
-	AchGetCache()[name] = nil
-	for i = #achQueue, 1, -1 do
-		if achQueue[i].name == name then
-			table.remove(achQueue, i)
-		end
-	end
-	if not (achPending and achPending.name == name) then
-		achInFlight[name] = nil
-	end
-end
-
-local function AchDropPending()
-	if achPending then
-		if not BlizzCompareOpen() then
-			ClearAchievementComparisonUnit()
-		end
-		achInFlight[achPending.name] = nil
-		achPending = nil
-	end
-end
-
-function RaidCompUI:SetAchievementTooltipEnabled(on)
-	JohnnysRaidComp.db.profile.showAchievementTooltip = on and true or false
-	if not on then
-		for i = #achQueue, 1, -1 do
-			achInFlight[achQueue[i].name] = nil
-			achQueue[i] = nil
-		end
-		AchDropPending()
-	end
-	if self:IsShowingComp() then
-		self:RefreshComp()
-	end
-end
-
--- Reads every tracked achievement + kill statistic for all raids out of the
--- active comparison. pcall'd by the event handler below.
-local function AchReadBody(name)
-	local entry = { ach = {}, stats = {}, updatedAt = time(), v = ACH_DATA_VERSION }
-	for raidKey, spec in pairs(RaidCompUI.RAID_ACHIEVEMENTS) do
-		for key, ids in pairs(spec) do
-			if key ~= "bosses" and key ~= "runs" then
-				for _, id in ipairs(ids) do
-					if GetAchievementInfo(id) then
-						entry.ach[id] = GetAchievementComparisonInfo(id) and true or false
-					end
-				end
-			end
-		end
-		for _, sizeKey in ipairs(RaidCompUI.RAID_SIZE_ORDER[raidKey] or {}) do
-			for _, boss in ipairs(AchAllBosses(spec)) do
-				local statId = ResolveKillStat(boss, sizeKey)
-				if statId then
-					entry.stats[statId] = GetComparisonStatistic(statId)
-				end
-			end
-		end
-	end
-	AchGetCache()[name] = entry
-end
-
-local achPump = CreateFrame("Frame")
-local achGap = ACH_MIN_GAP
-local achSinceDone = ACH_MAX_GAP -- seconds since the last request finished
-achPump:SetScript("OnUpdate", function(self, elapsed)
-	achSinceDone = achSinceDone + elapsed
-
-	if achPending then
-		if GetTime() - achPending.sentAt > ACH_TIMEOUT then
-			-- Never answered (left range, logged off, or the server throttling
-			-- us) - drop it and slow down; the next RefreshComp re-requests
-			-- them since nothing was stored.
-			AchDropPending()
-			achGap = math.min(achGap * 2, ACH_MAX_GAP)
-			achSinceDone = 0
-		end
-		return
-	end
-
-	if #achQueue == 0 or achSinceDone < achGap or BlizzCompareOpen() then
-		return
-	end
-
-	local request = table.remove(achQueue, 1)
-	if UnitExists(request.unit) and UnitName(request.unit) == request.name and UnitIsVisible(request.unit) then
-		request.sentAt = GetTime()
-		achPending = request
-		SetAchievementComparisonUnit(request.unit)
-	else
-		achInFlight[request.name] = nil
-	end
-end)
-
-local achEventFrame = CreateFrame("Frame")
-achEventFrame:RegisterEvent("INSPECT_ACHIEVEMENT_READY")
-achEventFrame:SetScript("OnEvent", function()
-	local request = achPending
-	if not request then
-		return
-	end
-	achPending = nil
-	achInFlight[request.name] = nil
-	achSinceDone = 0
-	achGap = math.max(ACH_MIN_GAP, achGap * 0.75)
-
-	-- The Blizzard compare opened while ours was pending - this READY may be
-	-- its data, not ours, so leave the comparison alone and retry later.
-	if BlizzCompareOpen() then
-		return
-	end
-
-	local ok, err = pcall(AchReadBody, request.name)
-	ClearAchievementComparisonUnit()
-	if not ok then
-		geterrorhandler()(err)
-		return
-	end
-	if RaidCompUI.OnGearScoreUpdated then
-		RaidCompUI.OnGearScoreUpdated(request.name)
-	end
-
-	-- If that member's tooltip is open right now, redraw it so the results
-	-- appear without having to mouse off and back on. Slot cards keep the
-	-- member in .matchedName, bench chips in .name.
-	local owner = GameTooltip:IsShown() and GameTooltip:GetOwner()
-	if owner and (owner.matchedName or owner.name) == request.name then
-		pcall(ShowGearScoreTooltip, owner, request.name)
-	end
-end)
-
--- `/jrc achcheck` - lists every configured achievement ID and resolved kill
--- statistic with the name this client reports, so bad IDs are easy to spot.
-function RaidCompUI:PrintAchievementCheck()
-	local out = DEFAULT_CHAT_FRAME
-	out:AddMessage("|cff66ccffJohnny's Raid Comp|r achievement check:")
-	for _, raidKey in ipairs(self.RAID_ORDER) do
-		local spec = self.RAID_ACHIEVEMENTS[raidKey]
-		if spec then
-			for _, sizeKey in ipairs(self.RAID_SIZE_ORDER[raidKey] or {}) do
-				local parts = {}
-				for _, id in ipairs(spec[sizeKey] or {}) do
-					local _, achName = GetAchievementInfo(id)
-					table.insert(parts, achName and (id .. " " .. achName) or ("|cffff4040" .. id .. " BAD|r"))
-				end
-				for _, boss in ipairs(AchAllBosses(spec)) do
-					local statId = ResolveKillStat(boss, sizeKey)
-					local statName = statId and select(2, GetAchievementInfo(statId))
-					table.insert(parts, statName and ("stat " .. statId .. " " .. statName) or ("|cffff4040" .. boss .. " kills: NOT FOUND|r"))
-				end
-				out:AddMessage(string.format("%s %s: %s", raidKey, sizeKey, table.concat(parts, "; ")))
-			end
-		end
-	end
-end
-
--- Registered at load (not in BuildFrame) so the Cfg panel shows it even if
--- it's opened before the comp window has ever been built.
-if JohnnysRaidComp.WindowSettings then
-	JohnnysRaidComp.WindowSettings:RegisterOption("achTooltip", "Show achievements in tooltips",
-		function() return RaidCompUI:IsAchievementTooltipEnabled() end,
-		function(checked) RaidCompUI:SetAchievementTooltipEnabled(checked) end)
 end

@@ -21,6 +21,8 @@ Modules\VersionCheck.lua
 
 Modules\RaidCompUI\Data.lua
 Modules\RaidCompUI\UI.lua
+Modules\RaidCompUI\Inspect.lua
+Modules\RaidCompUI\Achievements.lua
 Modules\RaidCompUI\Init.lua
 
 Modules\RaidSpam\Core.lua

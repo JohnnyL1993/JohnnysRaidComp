@@ -23,9 +23,12 @@ local ENTRIES = {
 			"Raid Spammer stops by itself once the raid is full.",
 			"The Raid Spammer preview shows the message length against the 255 character chat limit.",
 			"GearScore scans finish sooner.",
+			"Esc closes the Raid Comp window, and the Raid Spammer when it isn't running. Neither window can be dragged off-screen.",
 			"This changelog, opened from the Cfg panel.",
 		},
 		fixes = {
+			"The kick confirmation could open behind the Raid Comp window.",
+			"Saved GearScore, role and achievement data no longer grows forever: players not seen for 30 days are dropped at login, and the data is now kept per realm.",
 			"GearScores saved in an earlier session were never re-scanned after restarting your PC.",
 			"A slot emptied by a swap could stay empty in later raids. Hand-made placements are now forgotten when the group ends.",
 			"GearScore scans no longer swap the gear shown in your Inspect window - they pause while it's open.",

@@ -36,10 +36,13 @@ local defaults = {
 		-- also stops the scans themselves, not just the tooltip lines.
 		showAchievementTooltip = true,
 	},
-	-- Shared account-wide, not per-character - a raid member's GearScore isn't
-	-- tied to which of your own alts happened to inspect them (see
-	-- Modules\RaidCompUI\UI.lua's GearScore lookup section).
-	global = {
+	-- Not per-character - a raid member's GearScore isn't tied to which of your
+	-- own alts happened to inspect them (see Modules\RaidCompUI\UI.lua's
+	-- GearScore lookup section).
+	-- Per realm (and shared by all your characters on it): the same name on
+	-- another Warmane realm is a different player. Entries not refreshed for
+	-- CACHE_MAX_AGE are dropped at login - see PruneCaches below.
+	realm = {
 		raidCompGearScores = {},
 		-- [name] = { role = "TANK"/"HEALER"/"DAMAGER", spec = "Holy", class =, at = time() }
 		-- - the spec read from a raid member's talents when they were inspected
@@ -49,6 +52,8 @@ local defaults = {
 		-- [name] = { ach = {[id]=bool}, stats = {[id]="7"}, updatedAt = time() }.
 		-- time(), not GetTime(), so the stale check survives a client restart.
 		raidCompAchievements = {},
+	},
+	global = {
 		-- Highest addon version heard from other players (see
 		-- Modules\VersionCheck.lua); nil when we're up to date.
 		latestSeenVersion = nil,
@@ -58,6 +63,46 @@ local defaults = {
 	},
 }
 
+-- Player caches: [saved key] = the field holding each entry's time() stamp.
+local CACHES = {
+	raidCompGearScores = "updatedAt",
+	raidCompRoles = "at",
+	raidCompAchievements = "updatedAt",
+}
+local CACHE_MAX_AGE = 30 * 24 * 60 * 60 -- 30 days
+
+-- Drops every cached player who hasn't been scanned for CACHE_MAX_AGE, on
+-- every realm, so the saved file stops growing with each pug. An entry with
+-- no usable stamp goes too (GearScores saved before 1.7 were stamped with
+-- GetTime(), which reads as decades old) - it's simply re-scanned the next
+-- time that player is in your group. Also removes the old account-wide
+-- copies of these caches from before they were per realm.
+local function PruneCaches(db)
+	local now = time()
+	for _, realmData in pairs(db.sv.realm or {}) do
+		for cacheKey, stampField in pairs(CACHES) do
+			local cache = realmData[cacheKey]
+			if type(cache) == "table" then
+				for name, entry in pairs(cache) do
+					local stamp = type(entry) == "table" and tonumber(entry[stampField])
+					if not stamp or stamp > now + 86400 or now - stamp > CACHE_MAX_AGE then
+						cache[name] = nil
+					end
+				end
+			end
+		end
+	end
+
+	local oldGlobal = db.sv.global
+	if oldGlobal then
+		for cacheKey in pairs(CACHES) do
+			oldGlobal[cacheKey] = nil
+		end
+	end
+end
+
 function JohnnysRaidComp:OnInitialize()
 	self.db = LibStub("AceDB-3.0"):New("JohnnysRaidCompDB", defaults)
+	-- pcall'd: housekeeping must never be able to stop the addon loading.
+	pcall(PruneCaches, self.db)
 end
