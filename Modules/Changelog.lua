@@ -14,6 +14,14 @@ local Skin = NS.Skin
 
 local ENTRIES = {
 	{
+		version = "1.7.1",
+		changes = {
+			"Ready check is for the leader and assistants only: the button is hidden otherwise, and ready checks started by someone else aren't tracked.",
+			"Gear check: each player's card shows missing enchants and empty gem sockets (e.g. \"2E 1G\"), and their tooltip names the slots - including a missing belt buckle. Rings aren't checked for enchants, since only enchanters can do those.",
+			"Fixed GearScore for transmogged players: it was sometimes worked out from the transmog appearance instead of the gear they actually wear, giving a far too low score (and a false PvP tag). Scores are now only read once the inspect has fully arrived and the player's real gear has loaded.",
+		},
+	},
+	{
 		version = "1.7",
 		changes = {
 			"Roles now come from each player's talents, read when they're inspected, so a Shadow Priest or Prot Paladin moves to the right section once scanned. Until then they're placed by a class guess and marked with an amber \"?\".",

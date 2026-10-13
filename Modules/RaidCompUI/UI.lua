@@ -397,6 +397,30 @@ end
 
 -- Shared GearScore/PVP-gear/blacklist/achievement tooltip for both slot cards
 -- and bench chips. Every exit path runs AddAchievementLines before Show.
+-- "2E 1G" for a GearScore cache entry with missing enchants / empty sockets,
+-- or nil when there's nothing to flag (or the check hasn't run yet).
+function RaidCompUI.GearIssueBadge(entry)
+	if not entry then
+		return nil
+	end
+	local enchants = entry.missingEnchants and #entry.missingEnchants or 0
+	local gems = 0
+	for _, text in ipairs(entry.emptySockets or {}) do
+		gems = gems + (tonumber(text:match("%((%d+)%)")) or 1)
+	end
+	local parts = {}
+	if enchants > 0 then
+		table.insert(parts, enchants .. "E")
+	end
+	if gems > 0 then
+		table.insert(parts, gems .. "G")
+	end
+	if #parts == 0 then
+		return nil
+	end
+	return table.concat(parts, " ")
+end
+
 function ShowGearScoreTooltip(owner, name)
 	GameTooltip:SetOwner(owner, "ANCHOR_TOP")
 	GameTooltip:SetText(name)
@@ -436,6 +460,20 @@ function ShowGearScoreTooltip(owner, name)
 		GameTooltip:AddLine("PVP gear: " .. table.concat(slotNames, ", "), 0.85, 0.3, 0.85)
 	else
 		GameTooltip:AddLine("No PVP gear detected", 0.6, 0.6, 0.6)
+	end
+
+	-- Enchants and gems (rings aren't checked for enchants - only enchanters
+	-- can do those).
+	if entry.missingEnchants then
+		if #entry.missingEnchants > 0 then
+			GameTooltip:AddLine("Missing enchants: " .. table.concat(entry.missingEnchants, ", "), 1, 0.85, 0.40, true)
+		end
+		if entry.emptySockets and #entry.emptySockets > 0 then
+			GameTooltip:AddLine("Empty sockets: " .. table.concat(entry.emptySockets, ", "), 1, 0.85, 0.40, true)
+		end
+		if #entry.missingEnchants == 0 and not (entry.emptySockets and #entry.emptySockets > 0) then
+			GameTooltip:AddLine("Fully enchanted and gemmed", 0.6, 0.6, 0.6)
+		end
 	end
 
 	if entry.updatedAt then
@@ -766,7 +804,11 @@ readyWatcher:RegisterEvent("READY_CHECK_CONFIRM")
 readyWatcher:RegisterEvent("READY_CHECK_FINISHED")
 readyWatcher:SetScript("OnEvent", function(self, event, arg1)
 	if event == "READY_CHECK" then
-		pcall(ReadyStart, arg1)
+		-- Only the leader or an assistant can act on the result (kick the
+		-- AFKs), so as a plain member a ready check is left alone entirely.
+		if CanKick() then
+			pcall(ReadyStart, arg1)
+		end
 	elseif event == "READY_CHECK_CONFIRM" then
 		if readyActive then
 			pcall(ReadyPoll)
@@ -956,6 +998,13 @@ function EnsureSlotCard(index)
 	card.pvpBadge:SetTextColor(0.85, 0.3, 0.85)
 	card.pvpBadge:Hide()
 
+	-- Missing enchants / empty sockets, bottom-right: "2E 1G". The tooltip
+	-- names the slots (see ShowGearScoreTooltip).
+	card.gearBadge = card:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	card.gearBadge:SetPoint("BOTTOMRIGHT", -4, 5)
+	card.gearBadge:SetTextColor(1, 0.85, 0.40)
+	card.gearBadge:Hide()
+
 	-- Ready-check flag (see the ready check section): icon bottom-left, plus
 	-- a word beside it for anything that isn't a plain "ready".
 	card.readyIcon = card:CreateTexture(nil, "OVERLAY")
@@ -1073,10 +1122,19 @@ function SetCardState(card, slot, matchedName, matchedClass, isClassRun)
 			else
 				card.pvpBadge:Hide()
 			end
+
+			local badge = RaidCompUI.GearIssueBadge(entry)
+			if badge then
+				card.gearBadge:SetText(badge)
+				card.gearBadge:Show()
+			else
+				card.gearBadge:Hide()
+			end
 		end)
 		if not ok then
 			card.gsText:Hide()
 			card.pvpBadge:Hide()
+			card.gearBadge:Hide()
 		end
 
 		card.blacklistEntry = JohnnysBlackList and JohnnysBlackList.BlackListUI and JohnnysBlackList.BlackListUI:GetEntryByName(matchedName)
@@ -1091,6 +1149,7 @@ function SetCardState(card, slot, matchedName, matchedClass, isClassRun)
 		card.nameText:SetText("open")
 		card.gsText:Hide()
 		card.pvpBadge:Hide()
+		card.gearBadge:Hide()
 		card.blacklistEntry = nil
 	end
 
@@ -1594,6 +1653,12 @@ function RaidCompUI:RefreshComp()
 	end
 	if readyBtn then
 		readyBtn.text:SetText(readyActive and "Checking..." or "Ready check")
+		-- Only the leader or an assistant can start one.
+		if CanKick() then
+			readyBtn:Show()
+		else
+			readyBtn:Hide()
+		end
 	end
 
 	local okNames, names = pcall(self.GetUninspectedNames, self)

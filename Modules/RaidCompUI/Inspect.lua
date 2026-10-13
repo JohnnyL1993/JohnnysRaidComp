@@ -55,6 +55,34 @@ local gsInFlight = {}
 local gsPendingGuid = {} -- [guid] = {name=, unit=}, so INSPECT_READY can find its request
 local gsRetries = {} -- [name] = zero-score attempts so far for the current inspect
 local gsRetryQueue = {} -- ordered list of {name=, unit=, fireAt=}
+-- The inspect currently being waited on ({name=, unit=, at=, answered=}).
+-- Until the server's inspect answer arrives (INSPECT_TALENT_READY), the client
+-- only knows another player's *visible* items - which for a transmogged
+-- player are the appearance items, not what they actually wear - so a read
+-- taken then gives a wrong (usually far too low) GearScore. Reads are only
+-- trusted once `answered` is set, and no new NotifyInspect goes out while one
+-- is pending, since that would replace the answer before it's read.
+local gsAwait
+local GS_ANSWER_TIMEOUT = 4 -- seconds to wait for the inspect answer before giving up
+
+-- Other addons inspect too - ElvUI's and GearScoreLite's mouseover tooltips,
+-- ElitistGroup's group scan - and the client only holds one player's inspect
+-- data at a time. If any of them inspects someone else (or clears the
+-- data) between our NotifyInspect and our read, our player is back to
+-- visible-only (transmog) gear. Every NotifyInspect / ClearInspectPlayer,
+-- ours included, is watched here so such a read can be thrown away.
+local gsInspectStamp = 0 -- bumped on every NotifyInspect/ClearInspectPlayer by anyone
+local gsLastInspectGuid -- GUID of the most recent NotifyInspect by anyone
+hooksecurefunc("NotifyInspect", function(unit)
+	gsInspectStamp = gsInspectStamp + 1
+	gsLastInspectGuid = unit and UnitGUID(unit)
+end)
+hooksecurefunc("ClearInspectPlayer", function()
+	gsInspectStamp = gsInspectStamp + 1
+	gsLastInspectGuid = nil
+end)
+local GS_MAX_REINSPECTS = 2 -- fresh inspects to try when another addon got in the way
+local gsReinspects = {} -- [name] = count for the current lookup
 
 local function GSGetCache()
 	return JohnnysRaidComp.db.realm.raidCompGearScores
@@ -82,7 +110,7 @@ end
 -- higher score would stick forever. The retry-until-valid logic above is
 -- what actually solves "first inspect often reads 0"; this just trusts
 -- whatever it hands back.
-function RaidCompUI:StoreGearScore(name, score, avgIlvl, hasPvpGear, pvpSlots)
+function RaidCompUI:StoreGearScore(name, score, avgIlvl, hasPvpGear, pvpSlots, missingEnchants, emptySockets)
 	local cache = GSGetCache()
 	local entry = cache[name]
 	if not entry then
@@ -98,6 +126,9 @@ function RaidCompUI:StoreGearScore(name, score, avgIlvl, hasPvpGear, pvpSlots)
 	end
 	entry.hasPvpGear = hasPvpGear
 	entry.pvpSlots = pvpSlots
+	-- nil when the gear check couldn't run; the card then shows nothing.
+	entry.missingEnchants = missingEnchants
+	entry.emptySockets = emptySockets
 	entry.updatedAt = time()
 
 	-- Flag a genuine change so gsFlashPump pulses this member's box until the
@@ -160,6 +191,123 @@ local function GSScanPvpGear(unit)
 	return hasPvp, slots, sawAnyItem
 end
 
+-- Missing enchants and empty gem sockets on the (now-inspected) unit's gear.
+-- Rings aren't checked for enchants (only enchanters can do those), nor
+-- profession extras (blacksmith sockets), trinkets, neck or relics.
+-- Returns two lists, e.g. {"Back", "Feet"} and {"Head", "Chest (2)", "Belt buckle"}.
+local ENCHANT_SLOTS = {
+	{ 1, "Head" }, { 3, "Shoulder" }, { 15, "Back" }, { 5, "Chest" }, { 9, "Wrist" },
+	{ 10, "Hands" }, { 7, "Legs" }, { 8, "Feet" }, { 16, "Main Hand" }, { 17, "Off Hand" }, { 18, "Ranged" },
+}
+local GEM_SLOTS = {
+	{ 1, "Head" }, { 2, "Neck" }, { 3, "Shoulder" }, { 15, "Back" }, { 5, "Chest" }, { 9, "Wrist" },
+	{ 10, "Hands" }, { 6, "Waist" }, { 7, "Legs" }, { 8, "Feet" }, { 11, "Ring" }, { 12, "Ring" },
+	{ 13, "Trinket" }, { 14, "Trinket" }, { 16, "Main Hand" }, { 17, "Off Hand" }, { 18, "Ranged" },
+}
+-- Off hands that can carry an enchant (a held-in-off-hand frill can't).
+local ENCHANTABLE_OFFHAND = {
+	INVTYPE_WEAPON = true, INVTYPE_WEAPONOFFHAND = true, INVTYPE_SHIELD = true, INVTYPE_2HWEAPON = true,
+}
+-- Below this item level a missing enchant or gem isn't worth flagging.
+local GEAR_CHECK_MIN_ILVL = 150
+
+local SOCKET_TEXTS = {
+	EMPTY_SOCKET_RED or "Red Socket", EMPTY_SOCKET_YELLOW or "Yellow Socket",
+	EMPTY_SOCKET_BLUE or "Blue Socket", EMPTY_SOCKET_META or "Meta Socket",
+	EMPTY_SOCKET_NO_COLOR or "Prismatic Socket",
+}
+
+-- Puts an item into the hidden scan tooltip - either the one `unit` has
+-- equipped in `slotId` (gems included, as the Inspect window shows it) or a
+-- plain item link - and returns its empty-socket count and its total socket
+-- count (each socket, filled or not, gets an icon texture).
+local function ScanSockets(unit, slotId, link)
+	pvpScanTooltip:SetOwner(UIParent, "ANCHOR_NONE")
+	pvpScanTooltip:ClearLines()
+	for i = 1, 10 do
+		local texture = _G["JohnnysRaidCompScanTooltipTexture" .. i]
+		if texture then
+			texture:Hide()
+		end
+	end
+	if link then
+		pvpScanTooltip:SetHyperlink(link)
+	else
+		pvpScanTooltip:SetInventoryItem(unit, slotId)
+	end
+	local empty = 0
+	for i = 2, pvpScanTooltip:NumLines() do
+		local fontString = _G["JohnnysRaidCompScanTooltipTextLeft" .. i]
+		local text = fontString and fontString:GetText()
+		if text then
+			for _, socket in ipairs(SOCKET_TEXTS) do
+				if text == socket then
+					empty = empty + 1
+					break
+				end
+			end
+		end
+	end
+	local total = 0
+	for i = 1, 10 do
+		local texture = _G["JohnnysRaidCompScanTooltipTexture" .. i]
+		if texture and texture:IsShown() and texture:GetTexture() then
+			total = total + 1
+		end
+	end
+	return empty, total
+end
+
+local function GSScanEnchantsGems(unit)
+	local _, class = UnitClass(unit)
+	local missingEnchants, emptySockets = {}, {}
+
+	for _, slot in ipairs(ENCHANT_SLOTS) do
+		local slotId, slotName = slot[1], slot[2]
+		local link = GetInventoryItemLink(unit, slotId)
+		if link then
+			local _, _, _, ilvl, _, _, _, _, equipLoc = GetItemInfo(link)
+			local enchant = tonumber(link:match("item:%d+:(%-?%d+)")) or 0
+			local check = ilvl and ilvl >= GEAR_CHECK_MIN_ILVL
+			if slotId == 17 then
+				check = check and ENCHANTABLE_OFFHAND[equipLoc]
+			elseif slotId == 18 then
+				-- Only hunters' bows, guns and crossbows take a scope.
+				check = check and class == "HUNTER" and (equipLoc == "INVTYPE_RANGED" or equipLoc == "INVTYPE_RANGEDRIGHT")
+			end
+			if check and enchant == 0 then
+				table.insert(missingEnchants, slotName)
+			end
+		end
+	end
+
+	for _, slot in ipairs(GEM_SLOTS) do
+		local slotId, slotName = slot[1], slot[2]
+		local link = GetInventoryItemLink(unit, slotId)
+		if link then
+			local _, _, _, ilvl = GetItemInfo(link)
+			if ilvl and ilvl >= GEAR_CHECK_MIN_ILVL then
+				local empty, total = ScanSockets(unit, slotId)
+				if empty > 0 then
+					table.insert(emptySockets, empty > 1 and (slotName .. " (" .. empty .. ")") or slotName)
+				end
+				-- Belt: an Eternal Belt Buckle adds a socket on top of the belt's
+				-- own, so a belt with no more sockets than it was made with has
+				-- no buckle.
+				if slotId == 6 and total > 0 then
+					local itemId = link:match("item:(%d+)")
+					local _, natural = ScanSockets(nil, nil, "item:" .. itemId .. ":0:0:0:0:0:0:0:0")
+					if total <= natural then
+						table.insert(emptySockets, "Belt buckle")
+					end
+				end
+			end
+		end
+	end
+
+	return missingEnchants, emptySockets
+end
+
 -- The request behind the most recent NotifyInspect ({name=, unit=, at=}) - the
 -- only player INSPECT_TALENT_READY can be about, since that event carries no
 -- name or GUID on 3.3.5a.
@@ -212,6 +360,78 @@ local function GSResolveScoreBody(name, unit)
 		return
 	end
 
+	-- No inspect answer yet: what the client can see now is only the visible
+	-- (possibly transmogged) gear, so wait for the answer instead of reading.
+	-- Your own gear is always the real thing.
+	local awaiting = gsAwait and gsAwait.name == name
+	local isSelf = UnitIsUnit(unit, "player")
+	-- A leftover timer for a lookup that is no longer the pending inspect
+	-- (timed out, re-queued, or another player's inspect has started since).
+	-- Reading now would see only the visible (transmog) gear, so drop it.
+	if not awaiting and not isSelf then
+		local queued = false
+		for _, request in ipairs(gsRequestQueue) do
+			if request.name == name then
+				queued = true
+				break
+			end
+		end
+		if not queued then
+			gsInFlight[name] = nil
+			gsRetries[name] = nil
+		end
+		return
+	end
+
+	-- On this server the inspect answer (INSPECT_TALENT_READY) can arrive
+	-- before the player's real gear does: for a moment afterwards the client
+	-- still shows their transmog look. So after the answer, keep re-reading
+	-- every half second until the gear stops changing (at least a second
+	-- after the answer, at most three), and only then score it.
+	if awaiting and gsAwait.answered and not isSelf then
+		local snapshot = {}
+		for slotId = 1, 18 do
+			snapshot[slotId] = GetInventoryItemLink(unit, slotId) or ""
+		end
+		local key = table.concat(snapshot, ";")
+		local sinceAnswer = GetTime() - gsAwait.answeredAt
+		local settled = key == gsAwait.lastSnapshot and sinceAnswer >= 1
+		gsAwait.lastSnapshot = key
+		if not settled and sinceAnswer < 3 then
+			table.insert(gsRetryQueue, { name = name, unit = unit, fireAt = GetTime() + 0.5 })
+			return
+		end
+	end
+
+	if awaiting and not gsAwait.answered and not isSelf then
+		if GetTime() - gsAwait.at < GS_ANSWER_TIMEOUT then
+			GSQueueRetry(name, unit)
+		else
+			-- No answer (out of range, or another addon's inspect took it).
+			-- Store nothing; the next refresh asks again.
+			gsInFlight[name] = nil
+			gsRetries[name] = nil
+			gsAwait = nil
+		end
+		return
+	end
+
+	-- Someone else inspected (or cleared) after us: the data we'd read is no
+	-- longer this player's real gear. Start a fresh inspect instead.
+	if awaiting and not isSelf
+		and (gsInspectStamp ~= gsAwait.stamp or gsLastInspectGuid ~= UnitGUID(unit)) then
+		gsAwait = nil
+		gsRetries[name] = nil
+		if (gsReinspects[name] or 0) < GS_MAX_REINSPECTS then
+			gsReinspects[name] = (gsReinspects[name] or 0) + 1
+			table.insert(gsRequestQueue, 1, { name = name, unit = unit })
+		else
+			gsReinspects[name] = nil
+			gsInFlight[name] = nil
+		end
+		return
+	end
+
 	local score, avgIlvl, incomplete = JohnnysRaidComp.GearScore:GetScore(unit)
 	local hasPvp, pvpSlots, sawAnyItem = GSScanPvpGear(unit)
 
@@ -225,13 +445,18 @@ local function GSResolveScoreBody(name, unit)
 		else
 			gsInFlight[name] = nil
 			gsRetries[name] = nil
+			if awaiting then gsAwait = nil end
 		end
 		return
 	end
 
 	gsInFlight[name] = nil
 	gsRetries[name] = nil
-	RaidCompUI:StoreGearScore(name, score, avgIlvl, hasPvp, pvpSlots)
+	gsReinspects[name] = nil
+	if awaiting then gsAwait = nil end
+	local okGear, missingEnchants, emptySockets = pcall(GSScanEnchantsGems, unit)
+	RaidCompUI:StoreGearScore(name, score, avgIlvl, hasPvp, pvpSlots,
+		okGear and missingEnchants or nil, okGear and emptySockets or nil)
 end
 
 -- Reads back the GearScore + the PVP scan for a unit that should now
@@ -249,6 +474,7 @@ local function GSResolveScore(name, unit)
 	if not ok then
 		gsInFlight[name] = nil
 		gsRetries[name] = nil
+		if gsAwait and gsAwait.name == name then gsAwait = nil end
 		geterrorhandler()(err)
 	end
 end
@@ -273,6 +499,9 @@ end
 -- stale pending inspect. Shared by the single-member Ctrl+click path and the
 -- whole-roster "Re-scan all GS" button below.
 local function GSClearPending(name)
+	if gsAwait and gsAwait.name == name then
+		gsAwait = nil
+	end
 	GSGetCache()[name] = nil
 	gsInFlight[name] = nil
 	gsRetries[name] = nil
@@ -363,13 +592,21 @@ gsPump:SetScript("OnUpdate", function(self, elapsed)
 	-- NotifyInspect on another member would swap the gear it's showing.
 	local inspectOpen = InspectFrame and InspectFrame:IsShown()
 
-	if not inspectOpen and gsSinceLastRequest >= GS_REQUEST_INTERVAL and #gsRequestQueue > 0 then
+	-- A pending inspect that has outlived its answer window is abandoned.
+	if gsAwait and GetTime() - gsAwait.at > GS_ANSWER_TIMEOUT + 5 then
+		gsInFlight[gsAwait.name] = nil
+		gsAwait = nil
+	end
+
+	if not inspectOpen and not gsAwait and gsSinceLastRequest >= GS_REQUEST_INTERVAL and #gsRequestQueue > 0 then
 		local request = table.remove(gsRequestQueue, 1)
 		if UnitExists(request.unit) and UnitName(request.unit) == request.name and CanInspect(request.unit) then
 			gsSinceLastRequest = 0
 			gsPendingGuid[UnitGUID(request.unit)] = request
 			gsLastInspect = { name = request.name, unit = request.unit, at = GetTime() }
+			gsAwait = { name = request.name, unit = request.unit, at = GetTime(), answered = false }
 			NotifyInspect(request.unit)
+			gsAwait.stamp = gsInspectStamp
 			GSQueueRetry(request.name, request.unit) -- safety net if INSPECT_READY never fires
 		else
 			-- Out of inspect range/can't be inspected right now - drop it;
@@ -415,6 +652,11 @@ gsInspectFrame:SetScript("OnEvent", function(self, event, guid)
 		-- Read the score now instead of waiting for the fallback timer, and
 		-- drop that timer so the same request isn't resolved twice.
 		local request = gsLastInspect
+		if gsAwait and request and gsAwait.name == request.name and gsInspectStamp == gsAwait.stamp
+			and not gsAwait.answered then
+			gsAwait.answered = true
+			gsAwait.answeredAt = GetTime()
+		end
 		if request and GetTime() - request.at <= 3 and gsInFlight[request.name] then
 			for i = #gsRetryQueue, 1, -1 do
 				if gsRetryQueue[i].name == request.name then
